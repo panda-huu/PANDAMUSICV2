@@ -29,8 +29,8 @@ _CACHE = os.path.join(_BASE, "cache")
 os.makedirs(_CACHE, exist_ok=True)
 
 _RNG = secrets.SystemRandom()
-INTERVAL_SEC = 300   # new round every 5 min
-GUESS_TIME = 60      # only 1 minute to answer
+INTERVAL_SEC = 300
+GUESS_TIME = 60
 REWARD = 150
 _TASK_STARTED = False
 
@@ -132,127 +132,121 @@ def _clear_round(chat_id: int):
 
 
 def _make_image(word: str) -> bytes:
-    """Very rough / hard-to-read captcha-style image."""
-    w, h = 520, 200
-    bg = (_RNG.randint(15, 50), _RNG.randint(15, 50), _RNG.randint(15, 50))
+    """Rough captcha — letters tight & centered so none get clipped."""
+    w, h = 560, 220
+    pad = 50  # safe margin so rotation doesn't hide letters
+    bg = (_RNG.randint(18, 55), _RNG.randint(18, 55), _RNG.randint(18, 55))
     img = Image.new("RGB", (w, h), bg)
     draw = ImageDraw.Draw(img)
 
-    # heavy noise dots
-    for _ in range(1800):
+    # background noise (lighter density so letters stay readable)
+    for _ in range(900):
         x, y = _RNG.randint(0, w - 1), _RNG.randint(0, h - 1)
-        draw.point(
-            (x, y),
-            fill=(_RNG.randint(0, 255), _RNG.randint(0, 255), _RNG.randint(0, 255)),
-        )
+        draw.point((x, y), fill=(_RNG.randint(0, 255), _RNG.randint(0, 255), _RNG.randint(0, 255)))
 
-    # thick messy lines
-    for _ in range(28):
+    for _ in range(16):
         draw.line(
-            (
-                _RNG.randint(-20, w + 20),
-                _RNG.randint(-20, h + 20),
-                _RNG.randint(-20, w + 20),
-                _RNG.randint(-20, h + 20),
-            ),
-            fill=(_RNG.randint(40, 220), _RNG.randint(40, 220), _RNG.randint(40, 220)),
-            width=_RNG.randint(1, 4),
-        )
-
-    # arcs / scribbles
-    for _ in range(10):
-        x0 = _RNG.randint(0, w)
-        y0 = _RNG.randint(0, h)
-        draw.arc(
-            (x0, y0, x0 + _RNG.randint(30, 120), y0 + _RNG.randint(20, 80)),
-            start=_RNG.randint(0, 360),
-            end=_RNG.randint(0, 360),
-            fill=(_RNG.randint(60, 200), _RNG.randint(60, 200), _RNG.randint(60, 200)),
+            (_RNG.randint(0, w), _RNG.randint(0, h), _RNG.randint(0, w), _RNG.randint(0, h)),
+            fill=(_RNG.randint(50, 180), _RNG.randint(50, 180), _RNG.randint(50, 180)),
             width=_RNG.randint(1, 3),
         )
 
-    # fonts
-    fonts = []
-    for size in (48, 52, 56, 60):
-        try:
-            fonts.append(ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size))
-        except Exception:
-            pass
-        try:
-            fonts.append(ImageFont.truetype("arial.ttf", size))
-        except Exception:
-            pass
-    if not fonts:
-        fonts = [ImageFont.load_default()]
-
-    # draw each letter separately — random offset / color (very rough)
-    n = max(len(word), 1)
-    total_w = w - 40
-    slot = total_w // n
-    base_x = 20
-    base_y = h // 2 - 30
-
-    for i, ch in enumerate(word):
-        font = _RNG.choice(fonts)
-        ox = base_x + i * slot + _RNG.randint(-8, 12)
-        oy = base_y + _RNG.randint(-22, 22)
-
-        # ghost / double print
-        ghost = (_RNG.randint(30, 90), _RNG.randint(30, 90), _RNG.randint(30, 90))
-        draw.text((ox + _RNG.randint(-3, 3), oy + _RNG.randint(-3, 3)), ch, font=font, fill=ghost)
-
-        # main letter — mid contrast so noise covers it
-        color = (
-            _RNG.randint(120, 230),
-            _RNG.randint(120, 230),
-            _RNG.randint(120, 230),
+    for _ in range(6):
+        x0 = _RNG.randint(0, w)
+        y0 = _RNG.randint(0, h)
+        draw.arc(
+            (x0, y0, x0 + _RNG.randint(40, 100), y0 + _RNG.randint(25, 70)),
+            start=_RNG.randint(0, 360),
+            end=_RNG.randint(0, 360),
+            fill=(_RNG.randint(70, 180), _RNG.randint(70, 180), _RNG.randint(70, 180)),
+            width=2,
         )
+
+    # one solid font size so spacing is predictable
+    font = None
+    for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "arial.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ):
+        try:
+            font = ImageFont.truetype(path, 54)
+            break
+        except Exception:
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+
+    # measure full word width with tight letter gaps
+    letter_gap = 8
+    char_widths = []
+    for ch in word:
+        try:
+            bb = draw.textbbox((0, 0), ch, font=font)
+            char_widths.append(bb[2] - bb[0])
+        except Exception:
+            char_widths.append(32)
+
+    text_w = sum(char_widths) + letter_gap * (len(word) - 1)
+    # center horizontally inside safe pad
+    start_x = max(pad, (w - text_w) // 2)
+    base_y = h // 2 - 28
+
+    x = start_x
+    for i, ch in enumerate(word):
+        # small jitter only — keep letters on canvas
+        ox = x + _RNG.randint(-3, 3)
+        oy = base_y + _RNG.randint(-10, 10)
+        ox = max(pad // 2, min(ox, w - pad))
+        oy = max(pad // 2, min(oy, h - pad - 20))
+
+        # ghost
+        draw.text(
+            (ox + 2, oy + 2),
+            ch,
+            font=font,
+            fill=(_RNG.randint(40, 80), _RNG.randint(40, 80), _RNG.randint(40, 80)),
+        )
+        # main letter — brighter so visible through noise
+        color = (_RNG.randint(190, 255), _RNG.randint(190, 255), _RNG.randint(190, 255))
         draw.text((ox, oy), ch, font=font, fill=color)
 
-        # strike through letter
-        if _RNG.random() < 0.55:
+        # light strike (not covering whole letter)
+        if _RNG.random() < 0.4:
+            sy = oy + _RNG.randint(18, 28)
             draw.line(
-                (ox - 2, oy + _RNG.randint(10, 35), ox + 30, oy + _RNG.randint(10, 40)),
-                fill=(_RNG.randint(80, 180), _RNG.randint(80, 180), _RNG.randint(80, 180)),
-                width=_RNG.randint(1, 2),
+                (ox, sy, ox + char_widths[i], sy + _RNG.randint(-2, 2)),
+                fill=(_RNG.randint(100, 160), _RNG.randint(100, 160), _RNG.randint(100, 160)),
+                width=1,
             )
 
-    # more lines OVER the text
-    for _ in range(14):
+        x += char_widths[i] + letter_gap
+
+    # lines over text (thinner)
+    for _ in range(8):
         draw.line(
-            (
-                _RNG.randint(0, w),
-                _RNG.randint(0, h),
-                _RNG.randint(0, w),
-                _RNG.randint(0, h),
-            ),
-            fill=(_RNG.randint(50, 180), _RNG.randint(50, 180), _RNG.randint(50, 180)),
-            width=_RNG.randint(1, 2),
+            (_RNG.randint(0, w), _RNG.randint(0, h), _RNG.randint(0, w), _RNG.randint(0, h)),
+            fill=(_RNG.randint(60, 150), _RNG.randint(60, 150), _RNG.randint(60, 150)),
+            width=1,
         )
 
-    # blur + noise feel
-    img = img.filter(ImageFilter.GaussianBlur(radius=_RNG.uniform(0.6, 1.4)))
-    img = img.filter(ImageFilter.SMOOTH_MORE)
+    # light blur only
+    img = img.filter(ImageFilter.GaussianBlur(radius=_RNG.uniform(0.3, 0.7)))
 
-    # slight rotate
-    angle = _RNG.uniform(-12, 12)
+    # mild rotate — small angle so edges don't clip letters
+    angle = _RNG.uniform(-5, 5)
     img = img.rotate(angle, resample=Image.BICUBIC, expand=0, fillcolor=bg)
 
-    # lower contrast a bit
     try:
-        img = ImageEnhance.Contrast(img).enhance(0.85)
-        img = ImageEnhance.Brightness(img).enhance(0.95)
+        img = ImageEnhance.Contrast(img).enhance(0.95)
     except Exception:
         pass
 
-    # final noise layer
+    # light final noise
     draw2 = ImageDraw.Draw(img)
-    for _ in range(600):
+    for _ in range(350):
         x, y = _RNG.randint(0, w - 1), _RNG.randint(0, h - 1)
-        draw2.point(
-            (x, y),
-            fill=(_RNG.randint(0, 255), _RNG.randint(0, 255), _RNG.randint(0, 255)),
-        )
+        draw2.point((x, y), fill=(_RNG.randint(0, 255), _RNG.randint(0, 255), _RNG.randint(0, 255)))
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -269,7 +263,6 @@ async def _is_admin(client, chat_id: int, user_id: int) -> bool:
 
 
 async def _expire_round(chat_id: int, msg_id: int, word: str):
-    """After 1 minute — close round if not solved."""
     await asyncio.sleep(GUESS_TIME)
     active = _get_round(chat_id)
     if not active:
@@ -327,7 +320,6 @@ async def _send_round(client, chat_id: int):
                 "winner_id": None,
             },
         )
-        # 1-minute timer
         try:
             asyncio.get_running_loop().create_task(
                 _expire_round(chat_id, msg.id, word.upper())
@@ -352,7 +344,6 @@ async def _guess_loop():
             chats = _load_chats()
             for cid in list(chats):
                 active = _get_round(cid)
-                # don't spam if unsolved round still in its 1-min window
                 if active and not active.get("solved") and time.time() - float(active.get("ts") or 0) < GUESS_TIME:
                     continue
                 try:
@@ -483,7 +474,6 @@ async def guess_answer(client, message: Message):
         if not word or not guess:
             return
 
-        # already solved by someone
         if active.get("solved") and not active.get("expired"):
             if guess == word:
                 return await message.reply_text(
@@ -492,7 +482,6 @@ async def guess_answer(client, message: Message):
                 )
             return
 
-        # time over
         age = time.time() - float(active.get("ts") or 0)
         if active.get("expired") or age > GUESS_TIME:
             if not active.get("solved"):
@@ -507,9 +496,8 @@ async def guess_answer(client, message: Message):
             return
 
         if guess != word:
-            return  # silent on wrong guess
+            return
 
-        # FIRST correct — lock immediately
         active["solved"] = True
         active["winner_id"] = message.from_user.id
         active["expired"] = False
