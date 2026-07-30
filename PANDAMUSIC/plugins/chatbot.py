@@ -22,6 +22,7 @@ BOT_TRIGGERS = [
 ]
 
 IGNORED_CMDS = [
+    # music / core
     "play",
     "vplay",
     "pause",
@@ -42,6 +43,7 @@ IGNORED_CMDS = [
     "queue",
     "song",
     "video",
+    # moderation
     "mute",
     "unmute",
     "ban",
@@ -51,6 +53,44 @@ IGNORED_CMDS = [
     "welcome",
     "setwelcome",
     "resetwelcome",
+    # games — economy
+    "bal",
+    "balance",
+    "wallet",
+    "shop",
+    "buy",
+    "give",
+    "pay",
+    "transfer",
+    "claim",
+    "daily",
+    "ranking",
+    "rich",
+    "top",
+    # games — social
+    "friend",
+    "addfriend",
+    "unfriend",
+    "removefriend",
+    "friends",
+    "friendlist",
+    "buddy",
+    "match",
+    # games — rpg
+    "battle",
+    "fight",
+    "duel",
+    "rob",
+    "protect",
+    "revive",
+    # games — fun
+    "dice",
+    "slots",
+    "slot",
+    "coinflip",
+    "flip",
+    "riddle",
+    "games",
 ]
 
 
