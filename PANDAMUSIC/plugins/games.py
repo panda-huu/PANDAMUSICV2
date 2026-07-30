@@ -5,6 +5,7 @@
 
 print("[games] loading plugin...", flush=True)
 
+import asyncio
 import json
 import os
 import random
@@ -145,22 +146,13 @@ def _gear(inv: dict):
 
 
 def _spin_slots():
-    """
-    Weighted outcomes (fair house edge):
-      70% lose
-      22% pair  (+70)
-      7%  triple (+200)
-      1%  diamond jackpot (+500)
-    """
     roll = _RNG.randint(1, 100)
 
     if roll <= 70:
-        # all different
         a, b, c = _RNG.sample(SLOT_ICONS, 3)
         return a, b, c, 0, "💨 No luck — try again"
 
     if roll <= 92:
-        # pair only
         icon = _RNG.choice(["🍒", "🍋", "🔔", "⭐"])
         other = _RNG.choice([x for x in SLOT_ICONS if x != icon])
         pos = _RNG.randint(0, 2)
@@ -906,25 +898,55 @@ async def slots_cmd(client, message: Message):
         return await message.reply_text(f"⏳ Wait {left}s before next /slots.")
 
     if int(u.get("coins") or 0) < cost:
-        return await message.reply_text(f"❌ Need ${cost} to play. You have ${u.get('coins', 0):,}.")
+        return await message.reply_text(
+            f"❌ Need ${cost} to play. You have ${u.get('coins', 0):,}."
+        )
 
+    # 1) pehle 🎰 dikhao
+    spin_msg = await message.reply_text("🎰")
+
+    # coins cut + result calculate
     u["coins"] = int(u["coins"]) - cost
     u["last_slots"] = now
-
     a, b, c, win, result = _spin_slots()
     if win > 0:
         u["coins"] = int(u["coins"]) + win
-
     _save(data)
 
+    # 2) spin animation (same message edit)
+    frames = [
+        "🎰 Spinning...",
+        "🎰 | ❓ | ❓ | ❓ |",
+        f"🎰 | {a} | ❓ | ❓ |",
+        f"🎰 | {a} | {b} | ❓ |",
+        f"🎰 | {a} | {b} | {c} |",
+    ]
+    for fr in frames:
+        try:
+            await spin_msg.edit_text(fr)
+        except Exception:
+            pass
+        await asyncio.sleep(0.55)
+
+    # 3) final result — same message edit
     net = win - cost
-    net_txt = f"(+${net})" if net > 0 else (f"(${net})" if net < 0 else "($0)")
-    await message.reply_text(
+    if net > 0:
+        net_txt = f"(+${net})"
+    elif net < 0:
+        net_txt = f"(${net})"
+    else:
+        net_txt = "($0)"
+
+    final = (
         f"🎰 | {a} | {b} | {c} |\n"
         f"{result}\n"
         f"💳 Bet: ${cost} {net_txt}\n"
         f"👛 Balance: ${u['coins']:,}"
     )
+    try:
+        await spin_msg.edit_text(final)
+    except Exception:
+        await message.reply_text(final)
 
 
 @bot.on_message(cdx(["coinflip", "flip"]))
