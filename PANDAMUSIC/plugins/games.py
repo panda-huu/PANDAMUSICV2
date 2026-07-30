@@ -112,6 +112,10 @@ def _mention(user) -> str:
     return f'<a href="tg://user?id={user.id}">{_name(user)}</a>'
 
 
+def _is_dead(u: dict) -> bool:
+    return (not u.get("alive", True)) or int(u.get("hp", 100)) <= 0
+
+
 def _rank(data: dict, user_id: int) -> int:
     users = data.get("users") or {}
     ranked = sorted(
@@ -339,7 +343,7 @@ async def bal_cmd(client, message: Message):
     _save(data)
 
     rank = _rank(data, target.id)
-    alive = u.get("alive", True) and int(u.get("hp", 100)) > 0
+    alive = not _is_dead(u)
     status = "❤️ Alive" if alive else "💀 Dead"
     kills = int(u.get("kills") or 0)
     coins = int(u.get("coins") or 0)
@@ -642,14 +646,22 @@ async def kill_cmd(client, message: Message):
         left = int(30 - (now - float(k["last_kill"])))
         return await message.reply_text(f"⏳ Wait {left}s before next /kill.")
 
-    if not k.get("alive", True):
-        return await message.reply_text("💀 You need /revive first!")
+    if _is_dead(k):
+        return await message.reply_text(
+            f"💀 <b>You are already dead!</b>\n"
+            f"Use /revive to come back.",
+            parse_mode=ParseMode.HTML,
+        )
 
     if v.get("protect_until", 0) > now:
         return await message.reply_text("🛡️ Target is protected!")
 
-    if not v.get("alive", True):
-        return await message.reply_text("💀 Target already down. They need /revive.")
+    if _is_dead(v):
+        return await message.reply_text(
+            f"💀 {_mention(target)} is <b>already dead!</b>\n"
+            f"They need /revive first.",
+            parse_mode=ParseMode.HTML,
+        )
 
     if random.random() > 0.55:
         k["last_kill"] = now
@@ -700,10 +712,13 @@ async def battle_cmd(client, message: Message):
     data = _load()
     a = _user(data, message.from_user.id)
     b = _user(data, target.id)
-    if not a.get("alive", True):
-        return await message.reply_text("💀 You need /revive first!")
-    if not b.get("alive", True):
-        return await message.reply_text("💀 Opponent needs to /revive first.")
+    if _is_dead(a):
+        return await message.reply_text("💀 You are already dead! Use /revive first.")
+    if _is_dead(b):
+        return await message.reply_text(
+            f"💀 {_mention(target)} is already dead! They need /revive.",
+            parse_mode=ParseMode.HTML,
+        )
 
     a_roll = random.randint(1, 100) + min(20, a.get("xp", 0) // 50)
     b_roll = random.randint(1, 100) + min(20, b.get("xp", 0) // 50)
@@ -856,7 +871,7 @@ async def revive_cmd(client, message: Message):
     cost = 500
     data = _load()
     u = _user(data, message.from_user.id)
-    if u.get("alive", True) and u.get("hp", 100) >= 100:
+    if not _is_dead(u) and int(u.get("hp", 100)) >= 100:
         return await message.reply_text("✅ You are already full HP.")
     if u["coins"] < cost:
         return await message.reply_text(f"❌ Need ${cost}.")
@@ -902,10 +917,8 @@ async def slots_cmd(client, message: Message):
             f"❌ Need ${cost} to play. You have ${u.get('coins', 0):,}."
         )
 
-    # 1) pehle 🎰 dikhao
     spin_msg = await message.reply_text("🎰")
 
-    # coins cut + result calculate
     u["coins"] = int(u["coins"]) - cost
     u["last_slots"] = now
     a, b, c, win, result = _spin_slots()
@@ -913,7 +926,6 @@ async def slots_cmd(client, message: Message):
         u["coins"] = int(u["coins"]) + win
     _save(data)
 
-    # 2) spin animation (same message edit)
     frames = [
         "🎰 Spinning...",
         "🎰 | ❓ | ❓ | ❓ |",
@@ -928,7 +940,6 @@ async def slots_cmd(client, message: Message):
             pass
         await asyncio.sleep(0.55)
 
-    # 3) final result — same message edit
     net = win - cost
     if net > 0:
         net_txt = f"(+${net})"
