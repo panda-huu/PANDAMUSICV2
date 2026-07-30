@@ -100,8 +100,17 @@ def help_menu_markup() -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([_btn(smallcaps("action"), _DANGER, callback_data="action_menu"), _btn(smallcaps("chatbot"), _SUCCESS, callback_data="chatbot_menu")])
-    rows.append([_btn(smallcaps("abuse"), _DANGER, callback_data="abuse_menu"), _btn(smallcaps("welcome"), _SUCCESS, callback_data="welcome_menu")])
+    rows.append([
+        _btn(smallcaps("action"), _DANGER, callback_data="action_menu"),
+        _btn(smallcaps("chatbot"), _SUCCESS, callback_data="chatbot_menu"),
+    ])
+    rows.append([
+        _btn(smallcaps("abuse"), _DANGER, callback_data="abuse_menu"),
+        _btn(smallcaps("welcome"), _SUCCESS, callback_data="welcome_menu"),
+    ])
+    rows.append([
+        _btn("🎮 " + smallcaps("games"), _PRIMARY, callback_data="games_menu"),
+    ])
     rows.append([_btn(smallcaps("🔙 back"), _DANGER, callback_data="home_menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -155,7 +164,15 @@ def start_caption(mention: str) -> str:
 
 
 def help_list_caption() -> str:
-    body = f"{smallcaps('help menu')}\n\n{smallcaps('tap any command button below to see how to use it.')}\n{smallcaps('action = mute ban kick etc.')}\n{smallcaps('chatbot = chaton chatoff')}\n{smallcaps('abuse = noabuse filter')}\n{smallcaps('welcome = setwelcome resetwelcome')}"
+    body = (
+        f"{smallcaps('help menu')}\n\n"
+        f"{smallcaps('tap any command button below to see how to use it.')}\n"
+        f"{smallcaps('action = mute ban kick etc.')}\n"
+        f"{smallcaps('chatbot = chaton chatoff')}\n"
+        f"{smallcaps('abuse = noabuse filter')}\n"
+        f"{smallcaps('welcome = setwelcome resetwelcome')}\n"
+        f"{smallcaps('games = economy rpg fun')}"
+    )
     return f"<blockquote expandable>{body}</blockquote>"
 
 
