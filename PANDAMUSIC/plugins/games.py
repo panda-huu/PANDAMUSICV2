@@ -8,6 +8,7 @@ print("[games] loading plugin...", flush=True)
 import json
 import os
 import random
+import secrets
 import time
 
 from pyrogram.enums import ParseMode
@@ -18,6 +19,7 @@ from .maintenance import block_if_maintenance, block_cb_if_maintenance
 
 _BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _DB = os.path.join(_BASE, "games_db.json")
+_RNG = secrets.SystemRandom()
 
 SHOP = {
     "sword": {"price": 1500, "name": "🗡️ Sword", "atk": 15, "slot": "weapon"},
@@ -35,6 +37,8 @@ RIDDLES = [
     ("What can travel around the world while staying in a corner?", "stamp"),
     ("What has hands but cannot clap?", "clock"),
 ]
+
+SLOT_ICONS = ["🍒", "🍋", "🔔", "⭐", "💎", "7️⃣"]
 
 
 def _load() -> dict:
@@ -78,6 +82,7 @@ def _user(data: dict, user_id: int) -> dict:
             "alive": True,
             "last_kill": 0,
             "last_rob": 0,
+            "last_slots": 0,
         }
     u = data["users"][key]
     u.setdefault("coins", 1000)
@@ -94,6 +99,7 @@ def _user(data: dict, user_id: int) -> dict:
     u.setdefault("last_claim", 0)
     u.setdefault("last_kill", 0)
     u.setdefault("last_rob", 0)
+    u.setdefault("last_slots", 0)
     return u
 
 
@@ -136,6 +142,40 @@ def _gear(inv: dict):
         else:
             flex.append(f"{name} x{qty}")
     return weapon, armor, flex
+
+
+def _spin_slots():
+    """
+    Weighted outcomes (fair house edge):
+      70% lose
+      22% pair  (+70)
+      7%  triple (+200)
+      1%  diamond jackpot (+500)
+    """
+    roll = _RNG.randint(1, 100)
+
+    if roll <= 70:
+        # all different
+        a, b, c = _RNG.sample(SLOT_ICONS, 3)
+        return a, b, c, 0, "💨 No luck — try again"
+
+    if roll <= 92:
+        # pair only
+        icon = _RNG.choice(["🍒", "🍋", "🔔", "⭐"])
+        other = _RNG.choice([x for x in SLOT_ICONS if x != icon])
+        pos = _RNG.randint(0, 2)
+        reels = [icon, icon, other]
+        if pos == 1:
+            reels = [icon, other, icon]
+        elif pos == 2:
+            reels = [other, icon, icon]
+        return reels[0], reels[1], reels[2], 70, "✨ Pair! +$70"
+
+    if roll <= 99:
+        icon = _RNG.choice(["🍒", "🍋", "🔔", "⭐", "7️⃣"])
+        return icon, icon, icon, 200, f"🎉 Triple {icon}! +$200"
+
+    return "💎", "💎", "💎", 500, "💎 JACKPOT! +$500"
 
 
 async def _target_user(client, message: Message):
@@ -844,43 +884,54 @@ async def dice_cmd(client, message: Message):
     try:
         await message.reply_dice(emoji="🎲")
     except Exception:
-        n = random.randint(1, 6)
+        n = _RNG.randint(1, 6)
         await message.reply_text(f"🎲 You rolled <b>{n}</b>", parse_mode=ParseMode.HTML)
 
 
-@bot.on_message(cdx(["slots", "slot"]))
+@bot.on_message(cdx("slots"))
 async def slots_cmd(client, message: Message):
     if await block_if_maintenance(message):
         return
     if not message.from_user:
         return
+
     cost = 50
     data = _load()
     u = _user(data, message.from_user.id)
-    if u["coins"] < cost:
-        return await message.reply_text(f"❌ Need ${cost} to play.")
-    u["coins"] -= cost
-    icons = ["🍒", "🍋", "🔔", "⭐", "💎", "7️⃣"]
-    a, b, c = random.choice(icons), random.choice(icons), random.choice(icons)
-    if a == b == c:
-        win = 500 if a == "💎" else 250
-        u["coins"] += win
-        result = f"🎉 JACKPOT! +${win}"
-    elif a == b or b == c or a == c:
-        win = 80
-        u["coins"] += win
-        result = f"✨ Nice! +${win}"
-    else:
-        result = "💨 No luck — try again"
+
+    now = time.time()
+    last = float(u.get("last_slots") or 0)
+    if now - last < 8:
+        left = int(8 - (now - last))
+        return await message.reply_text(f"⏳ Wait {left}s before next /slots.")
+
+    if int(u.get("coins") or 0) < cost:
+        return await message.reply_text(f"❌ Need ${cost} to play. You have ${u.get('coins', 0):,}.")
+
+    u["coins"] = int(u["coins"]) - cost
+    u["last_slots"] = now
+
+    a, b, c, win, result = _spin_slots()
+    if win > 0:
+        u["coins"] = int(u["coins"]) + win
+
     _save(data)
-    await message.reply_text(f"🎰 | {a} | {b} | {c} |\n{result}")
+
+    net = win - cost
+    net_txt = f"(+${net})" if net > 0 else (f"(${net})" if net < 0 else "($0)")
+    await message.reply_text(
+        f"🎰 | {a} | {b} | {c} |\n"
+        f"{result}\n"
+        f"💳 Bet: ${cost} {net_txt}\n"
+        f"👛 Balance: ${u['coins']:,}"
+    )
 
 
 @bot.on_message(cdx(["coinflip", "flip"]))
 async def coinflip_cmd(client, message: Message):
     if await block_if_maintenance(message):
         return
-    side = random.choice(["Heads", "Tails"])
+    side = _RNG.choice(["Heads", "Tails"])
     await message.reply_text(f"🪙 <b>{side}</b>!", parse_mode=ParseMode.HTML)
 
 
