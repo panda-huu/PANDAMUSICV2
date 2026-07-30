@@ -29,7 +29,9 @@ def panel_caption(
         f"{html.escape(header)}\n\n"
         f"{smallcaps('title')} : {t}\n"
         f"{smallcaps('duration')} : {d}\n"
-        f"{smallcaps('request by')} : {req}"
+        f"{smallcaps('request by')} : {req}\n\n"
+        f"ᴘᴏᴡᴇʀᴇᴅ ʙʏ : ᴘᴀɴᴅᴀ-ʙᴀʙʏ\n"
+        f"ʏᴛ ᴍᴜsɪᴄ ᴀᴘɪ ᴘᴏᴡᴇʀᴇᴅ ʙʏ : ᴀʀᴜʏᴛ ᴀᴘɪ"
         f"</blockquote>"
     )
 

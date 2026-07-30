@@ -1,47 +1,51 @@
-import aiofiles, aiohttp, base64, json, os, random, re, requests
-
-from .. import app, bot, call, cdz, console
-from urllib.parse import urlparse
+import aiofiles
+import aiohttp
+import os
+import random
+import re
 from io import BytesIO
-import asyncio
-import subprocess
+from urllib.parse import urlparse
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from pyrogram import filters
 from pyrogram.enums import ParseMode
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from ntgcalls import TelegramServerError
-from pytgcalls.exceptions import NoActiveGroupCall
-from pytgcalls.types import MediaStream, ExternalMedia
-from pytgcalls.types import AudioQuality, VideoQuality
 from youtubesearchpython.__future__ import VideosSearch
 
+from .. import bot, call, cdz
 from ..modules.formatters import panel_caption, queue_caption
 from .maintenance import block_if_maintenance
 
-import tempfile
-import os
+CACHE_DIR = "cache"
+FONT_PATH = "PANDAMUSIC/resource/font.ttf"
+FALLBACK_THUMB = "PANDAMUSIC/resource/thumbnail.png"
+
+POWERED_LINE_1 = "ᴘᴏᴡᴇʀᴇᴅ ʙʏ : ᴘᴀɴᴅᴀ-ʙᴀʙʏ"
+POWERED_LINE_2 = "ʏᴛ ᴍᴜsɪᴄ ᴀᴘɪ ᴘᴏᴡᴇʀᴇᴅ ʙʏ : ᴀʀᴜʏᴛ ᴀᴘɪ"
 
 
 def parse_query(query: str) -> str:
-    if bool(re.match(r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(?:watch\?v=|embed/|v/|shorts/|live/)?([A-Za-z0-9_-]{11})(?:[?&].*)?$', query)):
-        match = re.search(r'(?:v=|/(?:embed|v|shorts|live)/|youtu\.be/)([A-Za-z0-9_-]{11})', query)
+    if bool(
+        re.match(
+            r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(?:watch\?v=|embed/|v/|shorts/|live/)?([A-Za-z0-9_-]{11})(?:[?&].*)?$",
+            query,
+        )
+    ):
+        match = re.search(
+            r"(?:v=|/(?:embed|v|shorts|live)/|youtu\.be/)([A-Za-z0-9_-]{11})", query
+        )
         if match:
             return f"https://www.youtube.com/watch?v={match.group(1)}"
-
     return query
 
 
 def parse_tg_link(link: str):
     parsed = urlparse(link)
-    path = parsed.path.strip('/')
-    parts = path.split('/')
-
+    path = parsed.path.strip("/")
+    parts = path.split("/")
     if len(parts) >= 2:
         return str(parts[0]), int(parts[1])
-
     return None, None
 
 
@@ -49,17 +53,13 @@ async def fetch_song(query: str):
     try:
         search = VideosSearch(query, limit=1)
         result = (await search.next()).get("result", [])
-
         if not result:
             return {"error": "No video found"}
-
         vidid = result[0].get("id")
         if not vidid:
             return {"error": "Failed to get video ID"}
-
         url = "http://46.250.243.52:1470/song"
         params = {"query": vidid}
-
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as response:
                 if response.status == 200:
@@ -67,9 +67,7 @@ async def fetch_song(query: str):
                         return await response.json()
                     except Exception:
                         return {"error": "Invalid JSON response"}
-                else:
-                    return {"error": f"API returned status {response.status}"}
-
+                return {"error": f"API returned status {response.status}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -87,48 +85,38 @@ def convert_to_seconds(duration: str) -> int:
         return 0
 
 
-def format_duration(seconds: int) -> str:
-    days = seconds // 86400
-    hours = (seconds % 86400) // 3600
-    minutes = (seconds % 3600) // 60
-    sec = seconds % 60
-
-    parts = []
-    if days > 0:
-        parts.append(f"{days}d")
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0:
-        parts.append(f"{minutes}m")
-    if sec > 0 or not parts:
-        parts.append(f"{sec}s")
-
-    return " ".join(parts)
-
-
 def seconds_to_hhmmss(seconds):
+    seconds = max(0, int(seconds or 0))
     if seconds < 3600:
         minutes = seconds // 60
         sec = seconds % 60
-        return f"{minutes:02}:{sec:02}"
-    else:
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        sec = seconds % 60
-        return f"{hours:d}:{minutes:02}:{sec:02}"
+        return f"{minutes}:{sec:02d}"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    sec = seconds % 60
+    return f"{hours}:{minutes:02d}:{sec:02d}"
 
 
-def random_color():
-    return (random.randint(80, 255), random.randint(80, 255), random.randint(80, 255))
+def _load_font(size: int):
+    try:
+        return ImageFont.truetype(FONT_PATH, size)
+    except Exception:
+        try:
+            return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size)
+        except Exception:
+            return ImageFont.load_default()
 
 
 def trim_text(draw, text, font, max_width):
     if not text:
         return ""
-    original = text
+    original = str(text)
+    text = original
     while True:
         bbox = draw.textbbox((0, 0), text, font=font)
         if bbox[2] - bbox[0] <= max_width:
+            break
+        if len(text) <= 1:
             break
         text = text[:-1]
     if text != original:
@@ -141,241 +129,246 @@ def trim_text(draw, text, font, max_width):
     return text
 
 
-async def create_music_thumbnail(cover_path, title, artist, duration_seconds=None, output_path="thumbnail.png"):
-    if not title or title.strip() == "":
-        title = "Unknown Title"
-    if not artist or artist.strip() == "":
-        artist = "Unknown Artist"
+def _rounded_cover(cover: Image.Image, size: int, radius: int = 28) -> Image.Image:
+    cover = cover.convert("RGBA").resize((size, size), Image.LANCZOS)
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, size, size], radius=radius, fill=255)
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.paste(cover, (0, 0), mask)
+    return out
 
-    if (
-        duration_seconds is None
-        or duration_seconds == 0
-        or duration_seconds == "live"
-    ):
+
+def _draw_center_text(draw, text, y, font, fill, canvas_w):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0]
+    x = (canvas_w - w) // 2
+    draw.text((x, y), text, font=font, fill=fill)
+
+
+async def create_music_thumbnail(
+    cover_path,
+    title,
+    artist,
+    duration_seconds=None,
+    output_path="thumbnail.png",
+):
+    """Modern player-style panel: left cover, right controls, bottom powered-by."""
+    title = (title or "Unknown Title").strip() or "Unknown Title"
+    artist = (artist or "Unknown Artist").strip() or "Unknown Artist"
+
+    if duration_seconds is None or duration_seconds == 0 or duration_seconds == "live":
+        tot_sec = 0
         total_time = "Live"
-        tot_sec = None
+        cur_sec = 0
+        current_time = "0:00"
+        remain_time = "Live"
     else:
-        tot_sec = duration_seconds
-        total_time = seconds_to_hhmmss(duration_seconds)
-
-    if tot_sec:
-        cur_sec = random.randint(0, tot_sec)
+        tot_sec = int(duration_seconds)
+        total_time = seconds_to_hhmmss(tot_sec)
+        # show early progress like a real player (~3-8%)
+        cur_sec = max(1, min(tot_sec // 20, 12)) if tot_sec else 0
         current_time = seconds_to_hhmmss(cur_sec)
-    else:
-        cur_sec = random.randint(0, 7200)
-        current_time = seconds_to_hhmmss(cur_sec)
+        remain_time = f"-{seconds_to_hhmmss(max(0, tot_sec - cur_sec))}"
 
-    cover = Image.open(cover_path).convert("RGBA").resize((500, 500))
-    bg = cover.copy().resize((1280, 720))
-    bg = bg.filter(ImageFilter.GaussianBlur(25))
+    W, H = 1280, 720
 
-    grad_overlay = Image.new("RGBA", bg.size, (0, 0, 0, 0))
-    gdraw = ImageDraw.Draw(grad_overlay)
-    c1, c2 = random_color(), random_color()
-    for i in range(bg.height):
-        r = int(c1[0] + (c2[0]-c1[0]) * (i/bg.height))
-        g = int(c1[1] + (c2[1]-c1[1]) * (i/bg.height))
-        b = int(c1[2] + (c2[2]-c1[2]) * (i/bg.height))
-        gdraw.line([(0, i), (bg.width, i)], fill=(r, g, b, 80))
-    bg = Image.alpha_composite(bg, grad_overlay)
+    # --- background: blurred cover + dark overlay ---
+    try:
+        cover_src = Image.open(cover_path).convert("RGBA")
+    except Exception:
+        cover_src = Image.new("RGBA", (500, 500), (30, 30, 40, 255))
 
-    card_w, card_h = 700, 380
-    border_thickness = 5
-
-    grad = Image.new("RGBA", (card_w + border_thickness*2, card_h + border_thickness*2), (0,0,0,0))
-    gdraw = ImageDraw.Draw(grad)
-    c1, c2 = random_color(), random_color()
-    for i in range(grad.height):
-        r = int(c1[0] + (c2[0]-c1[0]) * (i/grad.height))
-        g = int(c1[1] + (c2[1]-c1[1]) * (i/grad.height))
-        b = int(c1[2] + (c2[2]-c1[2]) * (i/grad.height))
-        gdraw.line([(0, i), (grad.width, i)], fill=(r, g, b))
-
-    mask_outer = Image.new("L", grad.size, 0)
-    mask_inner = Image.new("L", (card_w, card_h), 0)
-    d_outer = ImageDraw.Draw(mask_outer)
-    d_inner = ImageDraw.Draw(mask_inner)
-
-    d_outer.rounded_rectangle([0, 0, grad.width, grad.height], 36, fill=255)
-    d_inner.rounded_rectangle([0, 0, card_w, card_h], 30, fill=255)
-
-    mask_inner_padded = Image.new("L", grad.size, 0)
-    mask_inner_padded.paste(mask_inner, (border_thickness, border_thickness))
-    mask_outer.paste(0, (0,0), mask_inner_padded)
-
-    border = Image.composite(grad, Image.new("RGBA", grad.size, (0,0,0,0)), mask_outer)
-
-    card = Image.new("RGBA", (card_w, card_h), (255, 255, 255, 60))
-    mask_card = Image.new("L", (card_w, card_h), 0)
-    ImageDraw.Draw(mask_card).rounded_rectangle([0,0,card_w,card_h], 30, fill=255)
-
-    card_with_border = border.copy()
-    card_with_border.paste(card, (border_thickness, border_thickness), mask_card)
-
-    x = (bg.width - card_with_border.width) // 2
-    y = (bg.height - card_with_border.height) // 2
-    bg.paste(card_with_border, (x,y), card_with_border)
-
-    cover_size = 200
-    border_size = 6
-
-    grad_cover = Image.new("RGBA", (cover_size + border_size*2, cover_size + border_size*2), (0,0,0,0))
-    gdraw = ImageDraw.Draw(grad_cover)
-    c1, c2 = random_color(), random_color()
-    for i in range(grad_cover.height):
-        r = int(c1[0] + (c2[0]-c1[0]) * (i/grad_cover.height))
-        g = int(c1[1] + (c2[1]-c1[1]) * (i/grad_cover.height))
-        b = int(c1[2] + (c2[2]-c1[2]) * (i/grad_cover.height))
-        gdraw.line([(0, i), (grad_cover.width, i)], fill=(r, g, b))
-
-    mask_outer = Image.new("L", grad_cover.size, 0)
-    mask_inner = Image.new("L", (cover_size, cover_size), 0)
-    d_outer = ImageDraw.Draw(mask_outer)
-    d_inner = ImageDraw.Draw(mask_inner)
-
-    d_outer.rounded_rectangle([0,0,grad_cover.width,grad_cover.height], 30, fill=255)
-    d_inner.rounded_rectangle([0,0,cover_size,cover_size], 26, fill=255)
-
-    mask_inner_padded = Image.new("L", grad_cover.size, 0)
-    mask_inner_padded.paste(mask_inner, (border_size, border_size))
-    mask_outer.paste(0, (0,0), mask_inner_padded)
-
-    border_cover = Image.composite(grad_cover, Image.new("RGBA", grad_cover.size, (0,0,0,0)), mask_outer)
-
-    cover_resized = cover.resize((cover_size, cover_size))
-    mask_cover = Image.new("L", (cover_size, cover_size), 0)
-    ImageDraw.Draw(mask_cover).rounded_rectangle([0,0,cover_size,cover_size], 26, fill=255)
-
-    cover_with_border = border_cover.copy()
-    cover_with_border.paste(cover_resized, (border_size, border_size), mask_cover)
-
-    cover_x = x + border_thickness + 30
-    cover_y = y + (card_h - cover_with_border.height)//2 + border_thickness
-    bg.paste(cover_with_border, (cover_x, cover_y), cover_with_border)
+    bg = cover_src.copy().resize((W, H), Image.LANCZOS)
+    bg = bg.filter(ImageFilter.GaussianBlur(40))
+    dark = Image.new("RGBA", (W, H), (0, 0, 0, 160))
+    bg = Image.alpha_composite(bg, dark)
 
     draw = ImageDraw.Draw(bg)
-    font_path = "PANDAMUSIC/resource/font.ttf"
-    try:
-        font_title = ImageFont.truetype(font_path, 36)
-        font_artist = ImageFont.truetype(font_path, 28)
-        font_time = ImageFont.truetype(font_path, 24)
-    except Exception:
-        font_title = ImageFont.load_default()
-        font_artist = ImageFont.load_default()
-        font_time = ImageFont.load_default()
 
-    max_width = card_w - 300
-    title = trim_text(draw, title, font_title, max_width)
-    artist = trim_text(draw, artist, font_artist, max_width)
+    # fonts
+    font_title = _load_font(36)
+    font_artist = _load_font(26)
+    font_time = _load_font(22)
+    font_power = _load_font(24)
+    font_power2 = _load_font(20)
 
-    text_x = cover_x + cover_with_border.width + 30
-    draw.text((text_x, y + 86), title, font=font_title, fill="white")
-    draw.text((text_x, y + 146), artist, font=font_artist, fill="white")
+    # --- layout positions (match screenshot style) ---
+    cover_size = 420
+    cover_x = 80
+    cover_y = (H - cover_size) // 2 - 20
+    cover_img = _rounded_cover(cover_src, cover_size, radius=32)
+    bg.paste(cover_img, (cover_x, cover_y), cover_img)
 
-    progress_x, progress_y = text_x, y + 206
-    bar_w, bar_h = 380, 8
-    prog_fill = int((cur_sec / tot_sec) * bar_w) if tot_sec else bar_w
+    # soft shadow under cover
+    # (already blended via rounded paste)
 
-    draw.rounded_rectangle([progress_x, progress_y, progress_x + bar_w, progress_y + bar_h],
-                           5, fill=(120, 120, 120, 160))
+    right_x = cover_x + cover_size + 70
+    right_w = W - right_x - 80
 
-    c1, c2 = random_color(), random_color()
-    for i in range(prog_fill):
-        r = int(c1[0] + (c2[0]-c1[0]) * (i/max(1, prog_fill)))
-        g = int(c1[1] + (c2[1]-c1[1]) * (i/max(1, prog_fill)))
-        b = int(c1[2] + (c2[2]-c1[2]) * (i/max(1, prog_fill)))
-        draw.line([(progress_x + i, progress_y), (progress_x + i, progress_y + bar_h)], fill=(r,g,b))
+    # title + artist
+    title_draw = trim_text(draw, title, font_title, right_w - 20)
+    artist_draw = trim_text(draw, artist, font_artist, right_w - 20)
+    title_y = cover_y + 40
+    draw.text((right_x, title_y), title_draw, font=font_title, fill=(255, 255, 255, 255))
+    draw.text(
+        (right_x, title_y + 52),
+        artist_draw,
+        font=font_artist,
+        fill=(200, 200, 210, 255),
+    )
 
-    knob_x = progress_x + prog_fill
-    knob_y = progress_y + bar_h // 2
-    draw.ellipse([knob_x - 6, knob_y - 6, knob_x + 6, knob_y + 6], fill="white", outline="black", width=2)
+    # progress bar
+    bar_x = right_x
+    bar_y = title_y + 130
+    bar_w = right_w
+    bar_h = 8
+    ratio = (cur_sec / tot_sec) if tot_sec else 0.05
+    fill_w = max(6, int(bar_w * min(ratio, 1.0)))
 
-    draw.text((progress_x, progress_y + 15), current_time, font=font_time, fill="white")
-    total_bbox = draw.textbbox((0, 0), total_time, font=font_time)
-    total_x = progress_x + bar_w - (total_bbox[2] - total_bbox[0])
-    draw.text((total_x, progress_y + 15), total_time, font=font_time, fill="red" if total_time == "Live" else "white")
+    # track
+    draw.rounded_rectangle(
+        [bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
+        radius=4,
+        fill=(255, 255, 255, 55),
+    )
+    # filled
+    draw.rounded_rectangle(
+        [bar_x, bar_y, bar_x + fill_w, bar_y + bar_h],
+        radius=4,
+        fill=(255, 255, 255, 230),
+    )
+    # knob
+    kx = bar_x + fill_w
+    ky = bar_y + bar_h // 2
+    draw.ellipse([kx - 8, ky - 8, kx + 8, ky + 8], fill=(255, 255, 255, 255))
 
-    controls_y = progress_y + 70
-    num_icons = 7
-    step = bar_w // (num_icons - 1)
-    icon_positions = [progress_x + i*step for i in range(num_icons)]
+    # times under bar
+    draw.text((bar_x, bar_y + 18), current_time, font=font_time, fill=(220, 220, 230, 255))
+    rem_bbox = draw.textbbox((0, 0), remain_time, font=font_time)
+    rem_w = rem_bbox[2] - rem_bbox[0]
+    draw.text(
+        (bar_x + bar_w - rem_w, bar_y + 18),
+        remain_time,
+        font=font_time,
+        fill=(220, 220, 230, 255),
+    )
 
-    shuffle_x = icon_positions[0]
-    draw.line([(shuffle_x-12, controls_y-8), (shuffle_x+8, controls_y+12)], fill=(0,255,120), width=3)
-    draw.polygon([(shuffle_x+8, controls_y+12), (shuffle_x+16, controls_y+6), (shuffle_x+2, controls_y+4)], fill=(0,255,120))
-    draw.line([(shuffle_x-12, controls_y+8), (shuffle_x-2, controls_y-2)], fill=(0,255,120), width=3)
+    # transport controls: prev | pause | next
+    cx = right_x + right_w // 2
+    cy = bar_y + 110
+    icon_gap = 90
+    white = (255, 255, 255, 255)
 
-    repeat_x = icon_positions[1]
-    repeat_color = (255, 220, 50)
-    draw.arc([repeat_x-14, controls_y-12, repeat_x+14, controls_y+12], start=30, end=300, fill=repeat_color, width=3)
-    draw.polygon([(repeat_x+14, controls_y-2), (repeat_x+22, controls_y-6), (repeat_x+14, controls_y-10)], fill=repeat_color)
+    # previous
+    px = cx - icon_gap
+    draw.polygon([(px + 14, cy - 16), (px + 14, cy + 16), (px - 14, cy)], fill=white)
+    draw.rectangle([px - 18, cy - 16, px - 12, cy + 16], fill=white)
 
-    sbx = icon_positions[2]
-    draw.polygon([(sbx+10, controls_y-10), (sbx+10, controls_y+10), (sbx-12, controls_y)], fill="white")
-    draw.rectangle([sbx+14, controls_y-10, sbx+18, controls_y+10], fill="white")
+    # pause
+    draw.rectangle([cx - 16, cy - 20, cx - 6, cy + 20], fill=white)
+    draw.rectangle([cx + 6, cy - 20, cx + 16, cy + 20], fill=white)
 
-    center_x = icon_positions[3]
-    bar_wid, bar_height = 6, 26
-    gap = 10
-    draw.rectangle([center_x-gap-bar_wid, controls_y-bar_height//2, center_x-gap, controls_y+bar_height//2], fill="white")
-    draw.rectangle([center_x+gap, controls_y-bar_height//2, center_x+gap+bar_wid, controls_y+bar_height//2], fill="white")
+    # next
+    nx = cx + icon_gap
+    draw.polygon([(nx - 14, cy - 16), (nx - 14, cy + 16), (nx + 14, cy)], fill=white)
+    draw.rectangle([nx + 12, cy - 16, nx + 18, cy + 16], fill=white)
 
-    sfx = icon_positions[4]
-    draw.polygon([(sfx-10, controls_y-10), (sfx-10, controls_y+10), (sfx+12, controls_y)], fill="white")
-    draw.rectangle([sfx-18, controls_y-10, sfx-14, controls_y+10], fill="white")
+    # volume bar
+    vol_y = cy + 70
+    vol_x = right_x + 40
+    vol_w = right_w - 80
+    vol_h = 6
+    vol_fill = int(vol_w * 0.65)
+    # speaker icon (simple)
+    sx = vol_x - 30
+    draw.polygon(
+        [(sx - 6, vol_y - 8), (sx + 6, vol_y - 14), (sx + 6, vol_y + 14), (sx - 6, vol_y + 8)],
+        fill=white,
+    )
+    draw.rectangle([sx - 12, vol_y - 6, sx - 6, vol_y + 6], fill=white)
 
-    fav_x = icon_positions[5]
-    heart = [(fav_x, controls_y), (fav_x-10, controls_y-10), (fav_x-20, controls_y), (fav_x, controls_y+14),
-             (fav_x+20, controls_y), (fav_x+10, controls_y-10)]
-    draw.polygon(heart, fill="red")
+    draw.rounded_rectangle(
+        [vol_x, vol_y - vol_h // 2, vol_x + vol_w, vol_y + vol_h // 2],
+        radius=3,
+        fill=(255, 255, 255, 50),
+    )
+    draw.rounded_rectangle(
+        [vol_x, vol_y - vol_h // 2, vol_x + vol_fill, vol_y + vol_h // 2],
+        radius=3,
+        fill=(255, 255, 255, 210),
+    )
+    draw.ellipse(
+        [vol_x + vol_fill - 7, vol_y - 7, vol_x + vol_fill + 7, vol_y + 7],
+        fill=white,
+    )
 
-    ear_x = icon_positions[6]
-    draw.arc([ear_x-20, controls_y-20, ear_x+20, controls_y+20], start=200, end=-20, fill="white", width=3)
-    draw.rectangle([ear_x-18, controls_y-4, ear_x-10, controls_y+12], fill="white")
-    draw.rectangle([ear_x+10, controls_y-4, ear_x+18, controls_y+12], fill="white")
+    # --- bottom powered-by footer (center) ---
+    footer_y1 = H - 95
+    footer_y2 = H - 58
+    _draw_center_text(draw, POWERED_LINE_1, footer_y1, font_power, (255, 255, 255, 230), W)
+    _draw_center_text(draw, POWERED_LINE_2, footer_y2, font_power2, (200, 200, 210, 210), W)
 
-    bg.save(output_path)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    # save as RGB jpeg-friendly
+    final = bg.convert("RGB")
+    final.save(output_path, quality=92)
     return output_path
 
 
-async def generate_thumbnail(url: str) -> str:
+async def _download_cover(url: str) -> str:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    filename = os.path.join(CACHE_DIR, f"cover_{abs(hash(url))}.jpg")
     try:
-        filename = os.path.join("cache", f"thumbnail_{hash(url)}.jpg")
+        if not url:
+            return ""
         parsed = urlparse(url)
-
         if parsed.scheme in ("http", "https"):
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
                     if resp.status != 200:
                         return ""
                     data = await resp.read()
+                    with open(filename, "wb") as f:
+                        f.write(data)
+                    return filename
+        if os.path.isfile(url):
+            return url
+    except Exception as e:
+        print(f"[cover download] {e}", flush=True)
+    return ""
 
-                    with Image.open(BytesIO(data)) as img:
-                        img = img.resize((1280, 720))
-                        buf = BytesIO()
-                        img.save(buf, format="JPEG", quality=90)
-                        buf.seek(0)
 
-                        async with aiofiles.open(filename, "wb") as f:
-                            await f.write(buf.read())
-
+async def generate_player_thumbnail(
+    thumb_url: str,
+    title: str,
+    artist: str,
+    duration_min: str,
+) -> str:
+    """Download cover + draw full player panel thumbnail."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    out = os.path.join(CACHE_DIR, f"panel_{abs(hash(title + str(thumb_url)))}.jpg")
+    cover = await _download_cover(thumb_url)
+    if not cover or not os.path.isfile(cover):
+        if os.path.isfile(FALLBACK_THUMB):
+            cover = FALLBACK_THUMB
         else:
-            if not os.path.isfile(url):
-                return "PANDAMUSIC/resource/thumbnail.png"
+            # solid fallback cover
+            cover = os.path.join(CACHE_DIR, "blank_cover.jpg")
+            Image.new("RGB", (500, 500), (40, 40, 50)).save(cover)
 
-            with Image.open(url) as img:
-                img = img.resize((1280, 720))
-                buf = BytesIO()
-                img.save(buf, format="JPEG", quality=90)
-                buf.seek(0)
+    tot = convert_to_seconds(duration_min or "0:00")
+    try:
+        return await create_music_thumbnail(
+            cover, title, artist, tot if tot else None, out
+        )
+    except Exception as e:
+        print(f"[thumbnail draw] {e}", flush=True)
+        return cover if cover else ""
 
-                async with aiofiles.open(filename, "wb") as f:
-                    await f.write(buf.read())
 
-        return filename
-
-    except Exception:
-        return "PANDAMUSIC/resource/thumbnail.png"
+async def generate_thumbnail(url: str) -> str:
+    """Legacy simple resize (kept for compatibility)."""
+    return await _download_cover(url)
 
 
 async def make_thumbnail(image, title, channel, duration, output):
@@ -387,9 +380,11 @@ async def start_stream_in_vc(client, message):
     if await block_if_maintenance(message):
         return
 
-    import traceback
     import time
-    from pytgcalls.types import MediaStream, AudioQuality
+    import traceback
+
+    from pytgcalls.types import AudioQuality, MediaStream
+
     from ..platforms import Youtube
     from .callbacks import player_markup, queue_markup, start_progress_task
 
@@ -492,7 +487,13 @@ async def start_stream_in_vc(client, message):
         return await aux.edit(f"Failed to start stream: {e}\n\n{tb[-500:]}")
 
     try:
-        thumb = await generate_thumbnail(info["thumbnail"])
+        # Player-style drawn thumbnail (cover + controls + powered by)
+        thumb = await generate_player_thumbnail(
+            info.get("thumbnail", ""),
+            info.get("title", "Unknown"),
+            info.get("channel") or info.get("uploader") or "YouTube Music",
+            info.get("duration_min", "0:00"),
+        )
         caption = panel_caption(
             info["title"],
             info.get("duration_min", "0:00"),
@@ -502,7 +503,7 @@ async def start_stream_in_vc(client, message):
         total_sec = convert_to_seconds(info.get("duration_min", "0:00"))
         buttons = player_markup(chat_id, 0, total_sec)
         await aux.delete()
-        if thumb:
+        if thumb and os.path.isfile(thumb):
             panel = await message.reply_photo(
                 photo=thumb,
                 caption=caption,
