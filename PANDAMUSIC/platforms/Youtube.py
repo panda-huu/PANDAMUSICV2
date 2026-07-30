@@ -51,12 +51,23 @@ async def search(query: str) -> Optional[Dict[str, Any]]:
             return None
 
         r = result[0]
+        channel = ""
+        try:
+            ch = r.get("channel") or {}
+            if isinstance(ch, dict):
+                channel = ch.get("name") or ""
+            elif isinstance(ch, str):
+                channel = ch
+        except Exception:
+            channel = ""
+
         return {
             "title": r.get("title") or "Unknown",
             "link": r.get("link") or "",
             "vidid": r.get("id") or "",
             "duration_min": r.get("duration") or "0:00",
             "thumbnail": (r.get("thumbnails") or [{}])[0].get("url", "").split("?")[0],
+            "channel": channel or "YouTube Music",
         }
     except Exception as e:
         print(f"[Youtube.search] Error: {e}", flush=True)
