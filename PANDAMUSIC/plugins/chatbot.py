@@ -77,6 +77,7 @@ IGNORED_CMDS = [
     "buddy",
     "match",
     # games — rpg
+    "kill",
     "battle",
     "fight",
     "duel",
