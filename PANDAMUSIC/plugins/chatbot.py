@@ -92,6 +92,13 @@ IGNORED_CMDS = [
     "flip",
     "riddle",
     "games",
+    # guess game
+    "guesson",
+    "startguess",
+    "guesstoff",
+    "stopguess",
+    "newguess",
+    "guessnow",
 ]
 
 
