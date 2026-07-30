@@ -4,8 +4,8 @@ httpx>=0.25.0
 asyncpg
 pillow>=9.5.0
 psutil>=5.9.0
-ntgcalls==2.2.5
-py-tgcalls==2.2.6
+ntgcalls>=2.2.5
+py-tgcalls>=2.2.8
 python-dotenv==1.0.1
 tgcrypto
 youtube-search-python
