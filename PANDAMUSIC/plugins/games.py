@@ -76,6 +76,7 @@ def _user(data: dict, user_id: int) -> dict:
             "protect_until": 0,
             "alive": True,
             "last_kill": 0,
+            "last_rob": 0,
         }
     u = data["users"][key]
     u.setdefault("coins", 1000)
@@ -90,6 +91,7 @@ def _user(data: dict, user_id: int) -> dict:
     u.setdefault("last_daily", 0)
     u.setdefault("last_claim", 0)
     u.setdefault("last_kill", 0)
+    u.setdefault("last_rob", 0)
     return u
 
 
@@ -190,7 +192,8 @@ async def games_economy_cb(client, query):
         return
     text = (
         "<b>💰 Economy & Shop</b>\n\n"
-        "<b>/bal</b> — Wallet, XP & inventory\n"
+        "<b>/bal</b> — Own wallet\n"
+        "<b>/bal @user</b> or reply — See their wallet\n"
         "<b>/shop</b> — Buy items\n"
         "<b>/buy [item]</b> — Purchase from shop\n"
         "<b>/give [amt] @user</b> — Transfer (10% tax)\n"
@@ -213,7 +216,7 @@ async def games_rpg_cb(client, query):
         "<b>⚔️ RPG & Battle</b>\n\n"
         "<b>/kill</b> (reply)\n↳ Game KO + random loot\n\n"
         "<b>/battle @user</b>\n↳ Friendly duel. Winner gains coins & XP!\n\n"
-        "<b>/rob [amt] @user</b>\n↳ Try to steal coins (risk of fail).\n\n"
+        "<b>/rob [amt]</b> reply or <b>/rob [amt] @user</b>\n↳ Steal up to their balance (risk of fail)\n\n"
         "<b>/protect</b>\n↳ Buy 24h shield (800 coins).\n\n"
         "<b>/revive</b>\n↳ Restore HP for 500 coins."
     )
@@ -251,14 +254,31 @@ async def bal_cmd(client, message: Message):
         return
     if not message.from_user:
         return
+
+    # own / reply / @user
+    target = message.from_user
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target = message.reply_to_message.from_user
+    elif message.command and len(message.command) > 1:
+        try:
+            target = await client.get_users(message.command[1])
+        except Exception:
+            return await message.reply_text("❌ User not found.")
+
+    if target.is_bot:
+        return await message.reply_text("❌ Bots have no wallet.")
+
     data = _load()
-    u = _user(data, message.from_user.id)
+    u = _user(data, target.id)
     _save(data)
+
     inv = u.get("inventory") or {}
     inv_txt = ", ".join(f"{k} x{v}" for k, v in inv.items()) if inv else "Empty"
     prot = "✅ Active" if u.get("protect_until", 0) > time.time() else "❌ None"
+    whose = "Your" if target.id == message.from_user.id else _name(target) + "'s"
+
     text = (
-        f"💰 <b>Balance — {_mention(message.from_user)}</b>\n\n"
+        f"💰 <b>{whose} Balance — {_mention(target)}</b>\n\n"
         f"🪙 Coins: <code>{u['coins']:,}</code>\n"
         f"⭐ XP: <code>{u['xp']:,}</code>\n"
         f"❤️ HP: <code>{u['hp']}</code>\n"
@@ -522,7 +542,6 @@ async def buddy_cmd(client, message: Message):
 
 @bot.on_message(cdx("kill"))
 async def kill_cmd(client, message: Message):
-    """Game KO — reply to a user. Virtual coins loot only."""
     if await block_if_maintenance(message):
         return
     if not message.from_user:
@@ -543,7 +562,6 @@ async def kill_cmd(client, message: Message):
     k = _user(data, killer.id)
     v = _user(data, target.id)
 
-    # cooldown 30s
     now = time.time()
     if now - float(k.get("last_kill") or 0) < 30:
         left = int(30 - (now - float(k["last_kill"])))
@@ -558,7 +576,6 @@ async def kill_cmd(client, message: Message):
     if not v.get("alive", True):
         return await message.reply_text("💀 Target already down. They need /revive.")
 
-    # 55% success chance
     if random.random() > 0.55:
         k["last_kill"] = now
         fine = min(k["coins"], random.randint(20, 80))
@@ -618,12 +635,12 @@ async def battle_cmd(client, message: Message):
 
     if a_roll >= b_roll:
         win, lose = a, b
-        winner, loser = message.from_user, target
+        winner = message.from_user
         a["wins"] += 1
         b["losses"] += 1
     else:
         win, lose = b, a
-        winner, loser = target, message.from_user
+        winner = target
         b["wins"] += 1
         a["losses"] += 1
 
@@ -648,19 +665,33 @@ async def battle_cmd(client, message: Message):
 
 @bot.on_message(cdx("rob"))
 async def rob_cmd(client, message: Message):
+    """
+    /rob [amount]  (reply to user)
+    /rob [amount] @user
+    Max steal = victim ke paas jitna balance hai.
+    """
     if await block_if_maintenance(message):
         return
     if not message.from_user:
         return
+
     if len(message.command) < 2:
-        return await message.reply_text("Usage: <code>/rob 100 @user</code> or reply /rob 100", parse_mode=ParseMode.HTML)
+        return await message.reply_text(
+            "Usage:\n"
+            "• Reply: <code>/rob 100</code>\n"
+            "• Mention: <code>/rob 100 @user</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
     try:
-        amount = int(message.command[1].replace(",", ""))
+        amount = int(str(message.command[1]).replace(",", "").replace("$", ""))
     except ValueError:
-        return await message.reply_text("❌ Invalid amount.")
+        return await message.reply_text("❌ Invalid amount. Example: <code>/rob 100</code>", parse_mode=ParseMode.HTML)
+
     if amount <= 0:
         return await message.reply_text("❌ Amount must be positive.")
 
+    # target: reply OR @user after amount
     target = None
     if message.reply_to_message and message.reply_to_message.from_user:
         target = message.reply_to_message.from_user
@@ -668,38 +699,64 @@ async def rob_cmd(client, message: Message):
         try:
             target = await client.get_users(message.command[2])
         except Exception:
-            pass
+            target = None
+
     if not target:
-        return await message.reply_text("❌ Reply to user or mention them.")
-    if target.id == message.from_user.id or target.is_bot:
-        return await message.reply_text("❌ Invalid target.")
+        return await message.reply_text(
+            "❌ Reply to a user or use <code>/rob 100 @user</code>",
+            parse_mode=ParseMode.HTML,
+        )
+    if target.id == message.from_user.id:
+        return await message.reply_text("❌ You can't rob yourself.")
+    if target.is_bot:
+        return await message.reply_text("❌ Can't rob bots.")
 
     data = _load()
     thief = _user(data, message.from_user.id)
     victim = _user(data, target.id)
 
-    if victim.get("protect_until", 0) > time.time():
+    now = time.time()
+    if now - float(thief.get("last_rob") or 0) < 20:
+        left = int(20 - (now - float(thief["last_rob"])))
+        return await message.reply_text(f"⏳ Wait {left}s before next /rob.")
+
+    if victim.get("protect_until", 0) > now:
         return await message.reply_text("🛡️ Target is protected!")
-    if victim["coins"] < amount:
-        amount = victim["coins"]
-    if amount <= 0:
-        return await message.reply_text("❌ Target has no coins.")
+
+    victim_bal = int(victim.get("coins") or 0)
+    if victim_bal <= 0:
+        return await message.reply_text(
+            f"❌ {_mention(target)} has <b>$0</b> — nothing to rob.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    # only as much as they have
+    steal = min(amount, victim_bal)
+    capped = steal < amount
 
     success = random.random() < 0.45
+    thief["last_rob"] = now
+
     if success:
-        victim["coins"] -= amount
-        thief["coins"] += amount
+        victim["coins"] = victim_bal - steal
+        thief["coins"] = int(thief.get("coins") or 0) + steal
         _save(data)
+        extra = f"\nℹ️ Asked ${amount:,} but target only had ${victim_bal:,}." if capped else ""
         await message.reply_text(
-            f"🕵️ Success! {_mention(message.from_user)} stole <b>{amount:,}</b> from {_mention(target)}",
+            f"🕵️ <b>ROB SUCCESS</b>\n\n"
+            f"😈 Robber: {_mention(message.from_user)}\n"
+            f"💀 Victim: {_mention(target)}\n"
+            f"💵 Stolen: <b>${steal:,}</b>{extra}",
             parse_mode=ParseMode.HTML,
         )
     else:
-        fine = min(thief["coins"], max(50, amount // 2))
-        thief["coins"] -= fine
+        fine = min(int(thief.get("coins") or 0), max(50, steal // 2))
+        thief["coins"] = int(thief.get("coins") or 0) - fine
         _save(data)
         await message.reply_text(
-            f"🚨 Caught! {_mention(message.from_user)} failed and paid fine <b>{fine:,}</b>",
+            f"🚨 <b>ROB FAILED</b>\n\n"
+            f"{_mention(message.from_user)} got caught!\n"
+            f"💸 Fine: <b>${fine:,}</b>",
             parse_mode=ParseMode.HTML,
         )
 
