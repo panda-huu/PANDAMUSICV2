@@ -4,7 +4,6 @@ import subprocess
 from typing import Optional, Dict, Any
 
 import aiohttp
-from youtubesearchpython.__future__ import VideosSearch
 
 from .. import console
 
@@ -39,39 +38,168 @@ def _to_vidid(value: str) -> str:
     return value.strip()
 
 
+def _safe_str(value, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value).strip() or default
+
+
+def _parse_thumb(r: dict) -> str:
+    thumbs = r.get("thumbnails")
+    if isinstance(thumbs, list) and thumbs:
+        first = thumbs[0] if isinstance(thumbs[0], dict) else {}
+        url = first.get("url")
+        if url:
+            return _safe_str(url).split("?")[0]
+    # common alt keys
+    for key in ("thumbnail", "thumb", "image"):
+        val = r.get(key)
+        if isinstance(val, str) and val:
+            return val.split("?")[0]
+        if isinstance(val, dict) and val.get("url"):
+            return _safe_str(val.get("url")).split("?")[0]
+    vidid = _safe_str(r.get("id") or r.get("vidid"))
+    if vidid:
+        return f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg"
+    return ""
+
+
+def _parse_channel(r: dict) -> str:
+    ch = r.get("channel")
+    if isinstance(ch, dict):
+        return _safe_str(ch.get("name") or ch.get("title"), "YouTube Music")
+    if isinstance(ch, str) and ch.strip():
+        return ch.strip()
+    for key in ("channelName", "uploader", "artist"):
+        val = r.get(key)
+        if val:
+            return _safe_str(val, "YouTube Music")
+    return "YouTube Music"
+
+
+def _normalize_result(r: dict) -> Optional[Dict[str, Any]]:
+    if not isinstance(r, dict):
+        return None
+
+    vidid = _safe_str(r.get("id") or r.get("vidid") or r.get("video_id"))
+    if not vidid and r.get("link"):
+        vidid = _to_vidid(_safe_str(r.get("link")))
+    if not vidid and r.get("url"):
+        vidid = _to_vidid(_safe_str(r.get("url")))
+    if not vidid or len(vidid) < 5:
+        return None
+
+    title = _safe_str(r.get("title"), "Unknown")
+    duration = _safe_str(r.get("duration") or r.get("duration_min") or r.get("duration_string"), "0:00")
+    # yt-dlp sometimes gives seconds as int
+    if isinstance(r.get("duration"), (int, float)) and r.get("duration"):
+        secs = int(r["duration"])
+        m, s = divmod(secs, 60)
+        h, m = divmod(m, 60)
+        duration = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+    link = _safe_str(r.get("link") or r.get("url")) or f"https://www.youtube.com/watch?v={vidid}"
+
+    return {
+        "title": title,
+        "link": link,
+        "vidid": vidid,
+        "duration_min": duration,
+        "thumbnail": _parse_thumb({**r, "id": vidid}),
+        "channel": _parse_channel(r),
+    }
+
+
+async def _search_yts(query: str) -> Optional[Dict[str, Any]]:
+    """Primary: youtube-search-python (may break when YT HTML changes)."""
+    try:
+        from youtubesearchpython.__future__ import VideosSearch
+
+        results = VideosSearch(str(query).strip(), limit=5)
+        data = await results.next()
+        items = data.get("result") or []
+        for item in items:
+            parsed = _normalize_result(item)
+            if parsed:
+                return parsed
+    except Exception as e:
+        print(f"[Youtube.search yts] {e}", flush=True)
+    return None
+
+
+async def _search_ytdlp(query: str) -> Optional[Dict[str, Any]]:
+    """Fallback: yt-dlp ytsearch — more reliable."""
+    try:
+        import yt_dlp
+
+        def _run():
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "extract_flat": True,
+                "skip_download": True,
+                "default_search": "ytsearch",
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+                return info
+
+        info = await asyncio.to_thread(_run)
+        entries = (info or {}).get("entries") or []
+        for entry in entries:
+            if not entry:
+                continue
+            # flat entries use 'id' / 'title' / 'duration' / 'url'
+            parsed = _normalize_result(
+                {
+                    "id": entry.get("id"),
+                    "title": entry.get("title"),
+                    "duration": entry.get("duration"),
+                    "url": entry.get("url") or entry.get("webpage_url"),
+                    "link": entry.get("webpage_url") or entry.get("url"),
+                    "channel": entry.get("channel") or entry.get("uploader"),
+                    "thumbnails": entry.get("thumbnails") or [],
+                    "thumbnail": entry.get("thumbnail"),
+                }
+            )
+            if parsed:
+                return parsed
+    except Exception as e:
+        print(f"[Youtube.search ytdlp] {e}", flush=True)
+    return None
+
+
 async def search(query: str) -> Optional[Dict[str, Any]]:
     if not query or not str(query).strip():
         return None
 
-    try:
-        results = VideosSearch(str(query).strip(), limit=1)
-        data = await results.next()
-        result = data.get("result") or []
-        if not result:
-            return None
+    q = str(query).strip()
 
-        r = result[0]
-        channel = ""
-        try:
-            ch = r.get("channel") or {}
-            if isinstance(ch, dict):
-                channel = ch.get("name") or ""
-            elif isinstance(ch, str):
-                channel = ch
-        except Exception:
-            channel = ""
+    # Direct YouTube URL / video id
+    if "youtube.com" in q or "youtu.be" in q or (len(q) == 11 and " " not in q):
+        vidid = _to_vidid(q)
+        if vidid and len(vidid) >= 10:
+            return {
+                "title": "YouTube Video",
+                "link": f"https://www.youtube.com/watch?v={vidid}",
+                "vidid": vidid,
+                "duration_min": "0:00",
+                "thumbnail": f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg",
+                "channel": "YouTube Music",
+            }
 
-        return {
-            "title": r.get("title") or "Unknown",
-            "link": r.get("link") or "",
-            "vidid": r.get("id") or "",
-            "duration_min": r.get("duration") or "0:00",
-            "thumbnail": (r.get("thumbnails") or [{}])[0].get("url", "").split("?")[0],
-            "channel": channel or "YouTube Music",
-        }
-    except Exception as e:
-        print(f"[Youtube.search] Error: {e}", flush=True)
-        return None
+    # 1) youtube-search-python
+    result = await _search_yts(q)
+    if result:
+        return result
+
+    # 2) yt-dlp fallback
+    result = await _search_ytdlp(q)
+    if result:
+        return result
+
+    print(f"[Youtube.search] No results for: {q}", flush=True)
+    return None
 
 
 async def _download(vidid: str, media_type: str, ext: str, timeout_total: int) -> Optional[str]:
