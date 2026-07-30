@@ -1,4 +1,4 @@
-# PANDAMUSICV2
+# 𝗣𝗔𝗡𝗗𝗔 𝗠𝗨𝗦𝗜𝗖 𝗩2 🥰
 
 Advanced Telegram VC Music Bot (based on AdityaPlayer structure).
 
