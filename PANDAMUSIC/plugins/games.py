@@ -20,11 +20,11 @@ _BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 _DB = os.path.join(_BASE, "games_db.json")
 
 SHOP = {
-    "sword": {"price": 1500, "name": "⚔️ Sword", "atk": 15},
-    "shield": {"price": 1200, "name": "🛡️ Shield", "def": 12},
-    "armor": {"price": 2000, "name": "🥋 Armor", "def": 20},
-    "potion": {"price": 500, "name": "🧪 Potion", "heal": 50},
-    "boots": {"price": 800, "name": "👢 Boots", "spd": 10},
+    "sword": {"price": 1500, "name": "🗡️ Sword", "atk": 15, "slot": "weapon"},
+    "shield": {"price": 1200, "name": "🛡️ Shield", "def": 12, "slot": "armor"},
+    "armor": {"price": 2000, "name": "🥋 Armor", "def": 20, "slot": "armor"},
+    "potion": {"price": 500, "name": "🧪 Potion", "heal": 50, "slot": "flex"},
+    "boots": {"price": 800, "name": "👢 Boots", "spd": 10, "slot": "flex"},
 }
 
 RIDDLES = [
@@ -68,6 +68,7 @@ def _user(data: dict, user_id: int) -> dict:
             "xp": 0,
             "wins": 0,
             "losses": 0,
+            "kills": 0,
             "inventory": {},
             "hp": 100,
             "last_daily": 0,
@@ -86,6 +87,7 @@ def _user(data: dict, user_id: int) -> dict:
     u.setdefault("protect_until", 0)
     u.setdefault("wins", 0)
     u.setdefault("losses", 0)
+    u.setdefault("kills", 0)
     u.setdefault("xp", 0)
     u.setdefault("streak", 0)
     u.setdefault("last_daily", 0)
@@ -101,6 +103,39 @@ def _name(user) -> str:
 
 def _mention(user) -> str:
     return f'<a href="tg://user?id={user.id}">{_name(user)}</a>'
+
+
+def _rank(data: dict, user_id: int) -> int:
+    users = data.get("users") or {}
+    ranked = sorted(
+        users.items(),
+        key=lambda x: int(x[1].get("coins", 0)),
+        reverse=True,
+    )
+    uid = str(user_id)
+    for i, (k, _) in enumerate(ranked, 1):
+        if k == uid:
+            return i
+    return len(ranked) + 1
+
+
+def _gear(inv: dict):
+    weapon = "None"
+    armor = "None"
+    flex = []
+    for key, qty in (inv or {}).items():
+        if qty <= 0:
+            continue
+        info = SHOP.get(key, {})
+        name = info.get("name", key)
+        slot = info.get("slot", "flex")
+        if slot == "weapon" and weapon == "None":
+            weapon = f"{name} x{qty}"
+        elif slot == "armor" and armor == "None":
+            armor = f"{name} x{qty}"
+        else:
+            flex.append(f"{name} x{qty}")
+    return weapon, armor, flex
 
 
 async def _target_user(client, message: Message):
@@ -192,8 +227,8 @@ async def games_economy_cb(client, query):
         return
     text = (
         "<b>💰 Economy & Shop</b>\n\n"
-        "<b>/bal</b> — Own wallet\n"
-        "<b>/bal @user</b> or reply — See their wallet\n"
+        "<b>/bal</b> — Own profile\n"
+        "<b>/bal @user</b> or reply — See their profile\n"
         "<b>/shop</b> — Buy items\n"
         "<b>/buy [item]</b> — Purchase from shop\n"
         "<b>/give [amt] @user</b> — Transfer (10% tax)\n"
@@ -255,7 +290,6 @@ async def bal_cmd(client, message: Message):
     if not message.from_user:
         return
 
-    # own / reply / @user
     target = message.from_user
     if message.reply_to_message and message.reply_to_message.from_user:
         target = message.reply_to_message.from_user
@@ -272,20 +306,29 @@ async def bal_cmd(client, message: Message):
     u = _user(data, target.id)
     _save(data)
 
-    inv = u.get("inventory") or {}
-    inv_txt = ", ".join(f"{k} x{v}" for k, v in inv.items()) if inv else "Empty"
-    prot = "✅ Active" if u.get("protect_until", 0) > time.time() else "❌ None"
-    whose = "Your" if target.id == message.from_user.id else _name(target) + "'s"
+    rank = _rank(data, target.id)
+    alive = u.get("alive", True) and int(u.get("hp", 100)) > 0
+    status = "❤️ Alive" if alive else "💀 Dead"
+    kills = int(u.get("kills") or 0)
+    coins = int(u.get("coins") or 0)
+
+    weapon, armor, flex = _gear(u.get("inventory") or {})
+    if flex:
+        flex_txt = "\n".join(f"• {x}" for x in flex)
+    else:
+        flex_txt = "(No flex items owned)"
 
     text = (
-        f"💰 <b>{whose} Balance — {_mention(target)}</b>\n\n"
-        f"🪙 Coins: <code>{u['coins']:,}</code>\n"
-        f"⭐ XP: <code>{u['xp']:,}</code>\n"
-        f"❤️ HP: <code>{u['hp']}</code>\n"
-        f"🛡️ Protect: {prot}\n"
-        f"🏆 Wins: {u['wins']} | Losses: {u['losses']}\n"
-        f"🔥 Daily streak: {u.get('streak', 0)}\n"
-        f"🎒 Inventory: {inv_txt}"
+        f"👤 User: {_mention(target)}\n"
+        f"👛 Balance: ${coins:,}\n"
+        f"🏆 Rank: #{rank}\n"
+        f"❤️ Status: {status}\n"
+        f"⚔️ Kills: {kills}\n\n"
+        f"🎒 <b>Active Gear:</b>\n"
+        f"🗡️ Weapon: {weapon}\n"
+        f"🛡️ Armor: {armor}\n\n"
+        f"💎 <b>Flex Collection:</b>\n"
+        f"{flex_txt}"
     )
     await message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -296,7 +339,7 @@ async def shop_cmd(client, message: Message):
         return
     lines = ["🛒 <b>SHOP</b>\n", "Use <code>/buy itemname</code>\n"]
     for key, item in SHOP.items():
-        lines.append(f"• <b>{item['name']}</b> (<code>{key}</code>) — {item['price']:,} coins")
+        lines.append(f"• <b>{item['name']}</b> (<code>{key}</code>) — ${item['price']:,}")
     await message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
@@ -315,13 +358,13 @@ async def buy_cmd(client, message: Message):
     u = _user(data, message.from_user.id)
     price = SHOP[item_key]["price"]
     if u["coins"] < price:
-        return await message.reply_text(f"❌ Not enough coins. Need {price:,}.")
+        return await message.reply_text(f"❌ Not enough coins. Need ${price:,}.")
     u["coins"] -= price
     inv = u.setdefault("inventory", {})
     inv[item_key] = inv.get(item_key, 0) + 1
     _save(data)
     await message.reply_text(
-        f"✅ Bought <b>{SHOP[item_key]['name']}</b> for {price:,} coins!",
+        f"✅ Bought <b>{SHOP[item_key]['name']}</b> for ${price:,}!",
         parse_mode=ParseMode.HTML,
     )
 
@@ -362,13 +405,13 @@ async def give_cmd(client, message: Message):
     tax = max(1, int(amount * 0.10))
     total = amount + tax
     if sender["coins"] < total:
-        return await message.reply_text(f"❌ Need {total:,} (amount + 10% tax). You have {sender['coins']:,}.")
+        return await message.reply_text(f"❌ Need ${total:,} (amount + 10% tax). You have ${sender['coins']:,}.")
     sender["coins"] -= total
     receiver["coins"] += amount
     _save(data)
     await message.reply_text(
-        f"✅ {_mention(message.from_user)} sent <b>{amount:,}</b> coins to {_mention(target)}\n"
-        f"💸 Tax: {tax:,}",
+        f"✅ {_mention(message.from_user)} sent <b>${amount:,}</b> to {_mention(target)}\n"
+        f"💸 Tax: ${tax:,}",
         parse_mode=ParseMode.HTML,
     )
 
@@ -398,7 +441,7 @@ async def daily_cmd(client, message: Message):
     u["last_daily"] = now
     _save(data)
     await message.reply_text(
-        f"🎁 <b>Daily claimed!</b>\n🪙 +{reward:,} coins\n🔥 Streak: {u['streak']}\n⭐ +10 XP",
+        f"🎁 <b>Daily claimed!</b>\n🪙 +${reward:,}\n🔥 Streak: {u['streak']}\n⭐ +10 XP",
         parse_mode=ParseMode.HTML,
     )
 
@@ -423,7 +466,7 @@ async def claim_cmd(client, message: Message):
     u["last_claim"] = now
     _save(data)
     await message.reply_text(
-        f"🎉 Group bonus claimed! +<b>{reward:,}</b> coins",
+        f"🎉 Group bonus claimed! +<b>${reward:,}</b>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -441,7 +484,7 @@ async def ranking_cmd(client, message: Message):
     medals = ["🥇", "🥈", "🥉"]
     for i, (uid, u) in enumerate(ranked):
         medal = medals[i] if i < 3 else f"{i+1}."
-        lines.append(f"{medal} <code>{uid}</code> — {int(u.get('coins', 0)):,} coins")
+        lines.append(f"{medal} <code>{uid}</code> — ${int(u.get('coins', 0)):,}")
     await message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
@@ -592,6 +635,7 @@ async def kill_cmd(client, message: Message):
     k["coins"] += loot
     k["xp"] += 10
     k["wins"] += 1
+    k["kills"] = int(k.get("kills") or 0) + 1
     v["losses"] += 1
     v["hp"] = 0
     v["alive"] = False
@@ -658,18 +702,13 @@ async def battle_cmd(client, message: Message):
         f"⚔️ <b>BATTLE</b>\n\n"
         f"{_mention(message.from_user)} rolled <b>{a_roll}</b>\n"
         f"{_mention(target)} rolled <b>{b_roll}</b>\n\n"
-        f"🏆 Winner: {_mention(winner)} (+{gain} coins, +15 XP)",
+        f"🏆 Winner: {_mention(winner)} (+${gain}, +15 XP)",
         parse_mode=ParseMode.HTML,
     )
 
 
 @bot.on_message(cdx("rob"))
 async def rob_cmd(client, message: Message):
-    """
-    /rob [amount]  (reply to user)
-    /rob [amount] @user
-    Max steal = victim ke paas jitna balance hai.
-    """
     if await block_if_maintenance(message):
         return
     if not message.from_user:
@@ -691,7 +730,6 @@ async def rob_cmd(client, message: Message):
     if amount <= 0:
         return await message.reply_text("❌ Amount must be positive.")
 
-    # target: reply OR @user after amount
     target = None
     if message.reply_to_message and message.reply_to_message.from_user:
         target = message.reply_to_message.from_user
@@ -730,7 +768,6 @@ async def rob_cmd(client, message: Message):
             parse_mode=ParseMode.HTML,
         )
 
-    # only as much as they have
     steal = min(amount, victim_bal)
     capped = steal < amount
 
@@ -771,7 +808,7 @@ async def protect_cmd(client, message: Message):
     data = _load()
     u = _user(data, message.from_user.id)
     if u["coins"] < cost:
-        return await message.reply_text(f"❌ Need {cost} coins.")
+        return await message.reply_text(f"❌ Need ${cost}.")
     u["coins"] -= cost
     u["protect_until"] = time.time() + 86400
     _save(data)
@@ -790,7 +827,7 @@ async def revive_cmd(client, message: Message):
     if u.get("alive", True) and u.get("hp", 100) >= 100:
         return await message.reply_text("✅ You are already full HP.")
     if u["coins"] < cost:
-        return await message.reply_text(f"❌ Need {cost} coins.")
+        return await message.reply_text(f"❌ Need ${cost}.")
     u["coins"] -= cost
     u["hp"] = 100
     u["alive"] = True
@@ -821,18 +858,18 @@ async def slots_cmd(client, message: Message):
     data = _load()
     u = _user(data, message.from_user.id)
     if u["coins"] < cost:
-        return await message.reply_text(f"❌ Need {cost} coins to play.")
+        return await message.reply_text(f"❌ Need ${cost} to play.")
     u["coins"] -= cost
     icons = ["🍒", "🍋", "🔔", "⭐", "💎", "7️⃣"]
     a, b, c = random.choice(icons), random.choice(icons), random.choice(icons)
     if a == b == c:
         win = 500 if a == "💎" else 250
         u["coins"] += win
-        result = f"🎉 JACKPOT! +{win} coins"
+        result = f"🎉 JACKPOT! +${win}"
     elif a == b or b == c or a == c:
         win = 80
         u["coins"] += win
-        result = f"✨ Nice! +{win} coins"
+        result = f"✨ Nice! +${win}"
     else:
         result = "💨 No luck — try again"
     _save(data)
