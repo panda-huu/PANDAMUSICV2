@@ -9,9 +9,7 @@ import json
 import os
 import random
 import time
-from datetime import datetime, timedelta
 
-from pyrogram import filters
 from pyrogram.enums import ParseMode
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -77,6 +75,7 @@ def _user(data: dict, user_id: int) -> dict:
             "last_claim": 0,
             "protect_until": 0,
             "alive": True,
+            "last_kill": 0,
         }
     u = data["users"][key]
     u.setdefault("coins", 1000)
@@ -90,12 +89,16 @@ def _user(data: dict, user_id: int) -> dict:
     u.setdefault("streak", 0)
     u.setdefault("last_daily", 0)
     u.setdefault("last_claim", 0)
+    u.setdefault("last_kill", 0)
     return u
 
 
+def _name(user) -> str:
+    return (user.first_name or "User").replace("<", "").replace(">", "")
+
+
 def _mention(user) -> str:
-    name = (user.first_name or "User").replace("<", "").replace(">", "")
-    return f'<a href="tg://user?id={user.id}">{name}</a>'
+    return f'<a href="tg://user?id={user.id}">{_name(user)}</a>'
 
 
 async def _target_user(client, message: Message):
@@ -208,6 +211,7 @@ async def games_rpg_cb(client, query):
         return
     text = (
         "<b>⚔️ RPG & Battle</b>\n\n"
+        "<b>/kill</b> (reply)\n↳ Game KO + random loot\n\n"
         "<b>/battle @user</b>\n↳ Friendly duel. Winner gains coins & XP!\n\n"
         "<b>/rob [amt] @user</b>\n↳ Try to steal coins (risk of fail).\n\n"
         "<b>/protect</b>\n↳ Buy 24h shield (800 coins).\n\n"
@@ -363,7 +367,6 @@ async def daily_cmd(client, message: Message):
         left = int(86400 - (now - last))
         h, m = divmod(left // 60, 60)
         return await message.reply_text(f"⏳ Daily already claimed. Next in {h}h {m}m.")
-    # streak
     if now - last < 172800:
         u["streak"] = int(u.get("streak") or 0) + 1
     else:
@@ -422,7 +425,7 @@ async def ranking_cmd(client, message: Message):
     await message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
-# ── Friendship (no romance) ────────────────────────────────────
+# ── Friendship ─────────────────────────────────────────────────
 
 @bot.on_message(cdx(["friend", "addfriend"]))
 async def friend_cmd(client, message: Message):
@@ -517,6 +520,76 @@ async def buddy_cmd(client, message: Message):
 
 # ── RPG ────────────────────────────────────────────────────────
 
+@bot.on_message(cdx("kill"))
+async def kill_cmd(client, message: Message):
+    """Game KO — reply to a user. Virtual coins loot only."""
+    if await block_if_maintenance(message):
+        return
+    if not message.from_user:
+        return
+
+    if not (message.reply_to_message and message.reply_to_message.from_user):
+        return await message.reply_text("Reply to a user with <code>/kill</code>", parse_mode=ParseMode.HTML)
+
+    target = message.reply_to_message.from_user
+    killer = message.from_user
+
+    if target.id == killer.id:
+        return await message.reply_text("❌ You can't target yourself.")
+    if target.is_bot:
+        return await message.reply_text("❌ Can't target bots.")
+
+    data = _load()
+    k = _user(data, killer.id)
+    v = _user(data, target.id)
+
+    # cooldown 30s
+    now = time.time()
+    if now - float(k.get("last_kill") or 0) < 30:
+        left = int(30 - (now - float(k["last_kill"])))
+        return await message.reply_text(f"⏳ Wait {left}s before next /kill.")
+
+    if not k.get("alive", True):
+        return await message.reply_text("💀 You need /revive first!")
+
+    if v.get("protect_until", 0) > now:
+        return await message.reply_text("🛡️ Target is protected!")
+
+    if not v.get("alive", True):
+        return await message.reply_text("💀 Target already down. They need /revive.")
+
+    # 55% success chance
+    if random.random() > 0.55:
+        k["last_kill"] = now
+        fine = min(k["coins"], random.randint(20, 80))
+        k["coins"] -= fine
+        _save(data)
+        return await message.reply_text(
+            f"😅 Missed! {_mention(killer)} failed and lost <b>${fine}</b>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    loot = random.randint(50, 250)
+    loot = min(loot, max(0, v["coins"]))
+    v["coins"] = max(0, v["coins"] - loot)
+    k["coins"] += loot
+    k["xp"] += 10
+    k["wins"] += 1
+    v["losses"] += 1
+    v["hp"] = 0
+    v["alive"] = False
+    k["last_kill"] = now
+    _save(data)
+
+    text = (
+        f"📝 {_mention(killer)} kill {_mention(target)}!\n\n"
+        f"😈 Killer: {_mention(killer)}\n"
+        f"💀 Victim: {_mention(target)}\n"
+        f"💵 Loot: ${loot}"
+    )
+    await message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 @bot.on_message(cdx(["battle", "fight", "duel"]))
 async def battle_cmd(client, message: Message):
     if await block_if_maintenance(message):
@@ -539,7 +612,6 @@ async def battle_cmd(client, message: Message):
     if not b.get("alive", True):
         return await message.reply_text("💀 Opponent needs to /revive first.")
 
-    # simple roll battle
     a_roll = random.randint(1, 100) + min(20, a.get("xp", 0) // 50)
     b_roll = random.randint(1, 100) + min(20, b.get("xp", 0) // 50)
     stake = 100
