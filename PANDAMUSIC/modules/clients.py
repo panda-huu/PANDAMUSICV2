@@ -348,6 +348,52 @@ class Call(PyTgCalls):
         assistant = await group_assistant(self, chat_id)
         await assistant.leave_call(chat_id)
 
+    async def seek_stream(self, chat_id: int, position: int):
+        """Seek active stream to absolute position (seconds). Works for audio & video."""
+        assistant = await group_assistant(self, chat_id)
+        position = max(0, int(position))
+
+        # Try common pytgcalls / ntgcalls seek APIs
+        errors = []
+        for method_name in ("seek_stream", "seek", "seek_stream_position"):
+            method = getattr(assistant, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                await method(chat_id, position)
+                return
+            except TypeError:
+                try:
+                    await method(chat_id, position=position)
+                    return
+                except Exception as e:
+                    errors.append(f"{method_name}: {e}")
+            except Exception as e:
+                errors.append(f"{method_name}: {e}")
+
+        # Fallback: restart stream from position via ffmpeg-like play if available
+        queued = self.queue.get(chat_id) or []
+        if not queued:
+            raise RuntimeError("Nothing in queue to seek")
+
+        media = queued[0].get("media_stream")
+        if media is None:
+            raise RuntimeError("No media stream to seek")
+
+        # Some MediaStream objects support seek / ffmpeg params
+        try:
+            if hasattr(media, "seek") and callable(media.seek):
+                media.seek(position)
+                await assistant.play(chat_id, media, config=self.call_config)
+                return
+        except Exception as e:
+            errors.append(f"media.seek: {e}")
+
+        raise RuntimeError(
+            "Seek not supported by this pytgcalls version. "
+            + ("; ".join(errors) if errors else "")
+        )
+
     async def add_to_queue(
         self, chat_id, media_stream, title, duration, thumbnail, requested_by
     ):

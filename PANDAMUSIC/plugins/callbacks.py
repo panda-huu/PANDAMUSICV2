@@ -21,6 +21,7 @@ except Exception as e:
     print(f"[buttons] ButtonStyle missing ({e}) — upgrade kurigram", flush=True)
 
 _progress_tasks = {}
+SEEK_SECONDS = 10
 
 
 def _btn(text: str, callback_data: str, style=None) -> InlineKeyboardButton:
@@ -32,7 +33,9 @@ def _btn(text: str, callback_data: str, style=None) -> InlineKeyboardButton:
         except TypeError:
             pass
         try:
-            return InlineKeyboardButton(**kwargs, style=str(getattr(style, "name", style)).lower())
+            return InlineKeyboardButton(
+                **kwargs, style=str(getattr(style, "name", style)).lower()
+            )
         except TypeError:
             pass
     return InlineKeyboardButton(**kwargs)
@@ -70,10 +73,12 @@ def player_markup(chat_id: int, elapsed: int = 0, total: int = 0) -> InlineKeybo
     return InlineKeyboardMarkup(
         [
             [
+                _btn("⏪ -10", f"PLAYER SeekBack|{chat_id}", _STYLE_PRIMARY),
                 _btn("▷", f"PLAYER Resume|{chat_id}", _STYLE_PRIMARY),
                 _btn("II", f"PLAYER Pause|{chat_id}", _STYLE_SUCCESS),
                 _btn("‣‣I", f"PLAYER Skip|{chat_id}", _STYLE_PRIMARY),
                 _btn("▢", f"PLAYER Stop|{chat_id}", _STYLE_DANGER),
+                _btn("+10 ⏩", f"PLAYER SeekFwd|{chat_id}", _STYLE_PRIMARY),
             ],
             [
                 _btn(bar, f"PLAYER Progress|{chat_id}", _STYLE_SUCCESS),
@@ -126,6 +131,34 @@ def _get_progress(chat_id: int):
 
 def await_paused(chat_id: int) -> bool:
     return bool(call.paused.get(chat_id))
+
+
+async def _do_seek(chat_id: int, delta: int):
+    """Seek relative by delta seconds. Returns (ok, message)."""
+    elapsed, total, _title = _get_progress(chat_id)
+    new_pos = max(0, elapsed + delta)
+    if total > 0:
+        new_pos = min(new_pos, max(0, total - 1))
+
+    if new_pos == elapsed:
+        if delta < 0:
+            return False, "Already at start"
+        return False, "Already at end"
+
+    try:
+        await call.seek_stream(chat_id, new_pos)
+    except Exception as e:
+        return False, f"Seek failed: {type(e).__name__}"
+
+    # Keep progress tracking in sync
+    if not hasattr(call, "start_times"):
+        call.start_times = {}
+    call.start_times[chat_id] = time.time() - new_pos
+    queued = call.queue.get(chat_id) or []
+    if queued:
+        queued[0]["played"] = new_pos
+
+    return True, f"Seeked to {_fmt(new_pos)}"
 
 
 async def _progress_loop(chat_id: int):
@@ -309,6 +342,19 @@ async def player_panel_cb(client, query):
                 pass
         except Exception as e:
             await query.answer(f"Error: {type(e).__name__}", show_alert=True)
+
+    elif action in ("SeekBack", "SeekFwd"):
+        delta = -SEEK_SECONDS if action == "SeekBack" else SEEK_SECONDS
+        ok, msg = await _do_seek(chat_id, delta)
+        await query.answer(msg, show_alert=not ok)
+        if ok:
+            try:
+                elapsed, total, _ = _get_progress(chat_id)
+                await query.message.edit_reply_markup(
+                    reply_markup=player_markup(chat_id, elapsed, total)
+                )
+            except Exception:
+                pass
 
     else:
         await query.answer("Unknown action.", show_alert=True)
