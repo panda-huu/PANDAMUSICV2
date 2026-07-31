@@ -72,17 +72,23 @@ def player_markup(chat_id: int, elapsed: int = 0, total: int = 0) -> InlineKeybo
     bar = _progress_bar(elapsed, total)
     return InlineKeyboardMarkup(
         [
+            # Row 1 — original 4 controls
             [
-                _btn("⏪ -10", f"PLAYER SeekBack|{chat_id}", _STYLE_PRIMARY),
                 _btn("▷", f"PLAYER Resume|{chat_id}", _STYLE_PRIMARY),
                 _btn("II", f"PLAYER Pause|{chat_id}", _STYLE_SUCCESS),
                 _btn("‣‣I", f"PLAYER Skip|{chat_id}", _STYLE_PRIMARY),
                 _btn("▢", f"PLAYER Stop|{chat_id}", _STYLE_DANGER),
-                _btn("+10 ⏩", f"PLAYER SeekFwd|{chat_id}", _STYLE_PRIMARY),
             ],
+            # Row 2 — seek
+            [
+                _btn("⏪ -10s", f"PLAYER SeekBack|{chat_id}", _STYLE_PRIMARY),
+                _btn("+10s ⏩", f"PLAYER SeekFwd|{chat_id}", _STYLE_PRIMARY),
+            ],
+            # Row 3 — progress bar
             [
                 _btn(bar, f"PLAYER Progress|{chat_id}", _STYLE_SUCCESS),
             ],
+            # Row 4 — close
             [
                 _btn("🗑 Close", "close", _STYLE_DANGER),
             ],
@@ -150,7 +156,6 @@ async def _do_seek(chat_id: int, delta: int):
     except Exception as e:
         return False, f"Seek failed: {type(e).__name__}"
 
-    # Keep progress tracking in sync
     if not hasattr(call, "start_times"):
         call.start_times = {}
     call.start_times[chat_id] = time.time() - new_pos
