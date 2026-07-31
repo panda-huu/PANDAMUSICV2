@@ -3,6 +3,7 @@ import aiohttp
 import os
 import random
 import re
+import subprocess
 from io import BytesIO
 from urllib.parse import urlparse
 
@@ -95,6 +96,31 @@ def seconds_to_hhmmss(seconds):
     minutes = (seconds % 3600) // 60
     sec = seconds % 60
     return f"{hours}:{minutes:02d}:{sec:02d}"
+
+
+def file_has_video(path: str) -> bool:
+    """Check if file contains a video stream via ffprobe."""
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+                path,
+            ],
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+        return b"video" in out.lower()
+    except Exception as e:
+        print(f"[ffprobe video check] {e}", flush=True)
+        return False
 
 
 def _load_font(size: int):
@@ -349,48 +375,108 @@ async def make_thumbnail(image, title, channel, duration, output):
 
 
 def build_media_stream(file_path: str, is_video: bool, start_sec: int = 0):
-    """Build MediaStream for audio or video. Video uses VideoQuality."""
+    """
+    Build MediaStream matching working music bots pattern:
+    video -> audio_parameters + video_parameters + audio_flags REQUIRED + video_flags AUTO_DETECT/REQUIRED
+    audio -> audio_parameters + video_flags IGNORE
+    """
     from pytgcalls.types import AudioQuality, MediaStream
 
     start_sec = max(0, int(start_sec or 0))
-    kwargs = {
-        "media_path": file_path,
-        "audio_parameters": AudioQuality.HIGH,
-    }
 
+    # Resolve video quality enum
+    video_param = None
     if is_video:
-        # Prefer explicit video quality so VC shows video
-        video_param = None
         try:
             from pytgcalls.types import VideoQuality
 
-            for name in ("HD_720p", "SD_480p", "SD_360p", "HD_1080p"):
+            for name in ("HD_720p", "SD_480p", "SD_360p", "FHD_1080p", "HD_1080p"):
                 if hasattr(VideoQuality, name):
                     video_param = getattr(VideoQuality, name)
                     break
-        except Exception:
-            video_param = None
+        except Exception as e:
+            print(f"[VideoQuality] {e}", flush=True)
 
+    # Build with progressive fallbacks (different pytgcalls versions)
+    attempts = []
+
+    if is_video:
         if video_param is not None:
-            kwargs["video_parameters"] = video_param
-        else:
-            kwargs["video_flags"] = MediaStream.Flags.AUTO_DETECT
+            attempts.append(
+                dict(
+                    media_path=file_path,
+                    audio_parameters=AudioQuality.HIGH,
+                    video_parameters=video_param,
+                    audio_flags=MediaStream.Flags.REQUIRED,
+                    video_flags=MediaStream.Flags.AUTO_DETECT,
+                )
+            )
+            attempts.append(
+                dict(
+                    media_path=file_path,
+                    audio_parameters=AudioQuality.HIGH,
+                    video_parameters=video_param,
+                    audio_flags=MediaStream.Flags.REQUIRED,
+                    video_flags=MediaStream.Flags.REQUIRED,
+                )
+            )
+            attempts.append(
+                dict(
+                    media_path=file_path,
+                    audio_parameters=AudioQuality.HIGH,
+                    video_parameters=video_param,
+                )
+            )
+        attempts.append(
+            dict(
+                media_path=file_path,
+                audio_parameters=AudioQuality.HIGH,
+                video_flags=MediaStream.Flags.AUTO_DETECT,
+            )
+        )
+        attempts.append(
+            dict(
+                media_path=file_path,
+                audio_parameters=AudioQuality.HIGH,
+                video_flags=MediaStream.Flags.REQUIRED,
+            )
+        )
     else:
-        kwargs["video_flags"] = MediaStream.Flags.IGNORE
+        attempts.append(
+            dict(
+                media_path=file_path,
+                audio_parameters=AudioQuality.HIGH,
+                video_flags=MediaStream.Flags.IGNORE,
+            )
+        )
 
-    if start_sec > 0:
-        ff = f"-ss {start_sec}"
-        for key, val in (
-            ("ffmpeg_parameters", ff),
-            ("ffmpeg_parameters_before", ff),
-            ("ffmpeg_parameters", ["-ss", str(start_sec)]),
-        ):
-            try:
-                return MediaStream(**{**kwargs, key: val})
-            except TypeError:
-                continue
+    last_err = None
+    for kwargs in attempts:
+        if start_sec > 0:
+            kwargs = dict(kwargs)
+            kwargs["ffmpeg_parameters"] = f"-ss {start_sec}"
+        try:
+            stream = MediaStream(**kwargs)
+            print(f"[MediaStream OK] video={is_video} keys={list(kwargs.keys())}", flush=True)
+            return stream
+        except TypeError as e:
+            last_err = e
+            # retry without ffmpeg_parameters if that was the issue
+            if start_sec > 0 and "ffmpeg" in str(e).lower():
+                try:
+                    kwargs2 = {k: v for k, v in kwargs.items() if k != "ffmpeg_parameters"}
+                    stream = MediaStream(**kwargs2)
+                    print(f"[MediaStream OK no-ss] video={is_video}", flush=True)
+                    return stream
+                except Exception as e2:
+                    last_err = e2
+                    continue
+            continue
+        except Exception as e:
+            last_err = e
+            continue
 
-    return MediaStream(**kwargs)
+    raise RuntimeError(f"MediaStream build failed: {last_err}")
 
 
 @bot.on_message(cdz(["play", "vplay"]) & ~filters.private)
@@ -440,15 +526,26 @@ async def start_stream_in_vc(client, message):
     if not file_path:
         return await aux.edit("Download failed - API se file nahi mili.")
 
-    # Safety: video file should be mp4-ish; if only audio got downloaded, warn
     try:
         size = os.path.getsize(file_path)
+    except Exception:
+        size = 0
+
+    has_vid = False
+    if is_video:
+        has_vid = file_has_video(file_path)
         print(
-            f"[stream] is_video={is_video} path={file_path} size={size}",
+            f"[stream] vplay path={file_path} size={size} has_video_stream={has_vid}",
             flush=True,
         )
-    except Exception:
-        pass
+        if not has_vid:
+            return await aux.edit(
+                "❌ Downloaded file mein video stream nahi hai.\n"
+                "API ne audio-only file di — video play nahi ho sakta.\n\n"
+                "API/key check karo ya dusra song try karo."
+            )
+    else:
+        print(f"[stream] play path={file_path} size={size}", flush=True)
 
     try:
         media_stream = build_media_stream(file_path, is_video)
