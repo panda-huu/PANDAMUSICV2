@@ -348,14 +348,57 @@ class Call(PyTgCalls):
         assistant = await group_assistant(self, chat_id)
         await assistant.leave_call(chat_id)
 
-    async def seek_stream(self, chat_id: int, position: int):
-        """Seek active stream to absolute position (seconds). Works for audio & video."""
-        assistant = await group_assistant(self, chat_id)
-        position = max(0, int(position))
+    def _build_media_stream(self, file_path: str, is_video: bool, start_sec: int = 0):
+        from pytgcalls.types import AudioQuality, MediaStream
 
-        # Try common pytgcalls / ntgcalls seek APIs
-        errors = []
-        for method_name in ("seek_stream", "seek", "seek_stream_position"):
+        start_sec = max(0, int(start_sec))
+        kwargs = {
+            "media_path": file_path,
+            "audio_parameters": AudioQuality.HIGH,
+            "video_flags": (
+                MediaStream.Flags.AUTO_DETECT if is_video else MediaStream.Flags.IGNORE
+            ),
+        }
+
+        # ffmpeg -ss for seek position (works for local audio/video files)
+        if start_sec > 0:
+            ff = f"-ss {start_sec}"
+            for key in ("ffmpeg_parameters", "ffmpeg_parameters_before"):
+                try:
+                    return MediaStream(**{**kwargs, key: ff})
+                except TypeError:
+                    continue
+            # list form
+            try:
+                return MediaStream(**{**kwargs, "ffmpeg_parameters": ["-ss", str(start_sec)]})
+            except TypeError:
+                pass
+
+        return MediaStream(**kwargs)
+
+    async def seek_stream(self, chat_id: int, position: int):
+        """Seek by restarting stream from position (local file + ffmpeg -ss)."""
+        position = max(0, int(position))
+        queued = self.queue.get(chat_id) or []
+        if not queued:
+            raise RuntimeError("Nothing playing")
+
+        item = queued[0]
+        file_path = item.get("file_path")
+        is_video = bool(item.get("is_video", False))
+
+        if not file_path:
+            # try recover path from media_stream if present
+            ms = item.get("media_stream")
+            file_path = getattr(ms, "media_path", None) or getattr(ms, "path", None)
+
+        if not file_path:
+            raise RuntimeError("File path missing — re-play the song")
+
+        assistant = await group_assistant(self, chat_id)
+
+        # 1) Native seek if available
+        for method_name in ("seek_stream", "seek"):
             method = getattr(assistant, method_name, None)
             if not callable(method):
                 continue
@@ -366,39 +409,41 @@ class Call(PyTgCalls):
                 try:
                     await method(chat_id, position=position)
                     return
-                except Exception as e:
-                    errors.append(f"{method_name}: {e}")
-            except Exception as e:
-                errors.append(f"{method_name}: {e}")
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
-        # Fallback: restart stream from position via ffmpeg-like play if available
-        queued = self.queue.get(chat_id) or []
-        if not queued:
-            raise RuntimeError("Nothing in queue to seek")
+        # 2) Rebuild MediaStream from file starting at position
+        media = self._build_media_stream(file_path, is_video, position)
+        await assistant.play(chat_id, media, config=self.call_config)
+        item["media_stream"] = media
 
-        media = queued[0].get("media_stream")
-        if media is None:
-            raise RuntimeError("No media stream to seek")
+        if chat_id not in self.active_chats:
+            self.active_chats.append(chat_id)
 
-        # Some MediaStream objects support seek / ffmpeg params
-        try:
-            if hasattr(media, "seek") and callable(media.seek):
-                media.seek(position)
-                await assistant.play(chat_id, media, config=self.call_config)
-                return
-        except Exception as e:
-            errors.append(f"media.seek: {e}")
-
-        raise RuntimeError(
-            "Seek not supported by this pytgcalls version. "
-            + ("; ".join(errors) if errors else "")
-        )
+        # if was paused, keep playing after seek
+        self.paused[chat_id] = False
 
     async def add_to_queue(
-        self, chat_id, media_stream, title, duration, thumbnail, requested_by
+        self,
+        chat_id,
+        media_stream,
+        title,
+        duration,
+        thumbnail,
+        requested_by,
+        file_path=None,
+        is_video=False,
     ):
         if chat_id not in self.queue:
             self.queue[chat_id] = []
+
+        # recover path from stream object if not passed
+        if not file_path and media_stream is not None:
+            file_path = getattr(media_stream, "media_path", None) or getattr(
+                media_stream, "path", None
+            )
 
         item = {
             "media_stream": media_stream,
@@ -407,6 +452,8 @@ class Call(PyTgCalls):
             "thumbnail": thumbnail,
             "requested_by": requested_by,
             "played": 0,
+            "file_path": file_path,
+            "is_video": bool(is_video),
         }
         self.queue[chat_id].append(item)
         return len(self.queue[chat_id]) - 1
