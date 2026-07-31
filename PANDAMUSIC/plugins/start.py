@@ -39,6 +39,7 @@ ACTION_COMMANDS = [("mute", "/mute"), ("unmute", "/unmute"), ("ban", "/ban"), ("
 CHATBOT_COMMANDS = [("chaton", "/chaton"), ("chatoff", "/chatoff")]
 ABUSE_COMMANDS = [("noabuse", "/noabuse")]
 WELCOME_COMMANDS = [("welcome", "/welcome"), ("setwelcome", "/setwelcome"), ("resetwelcome", "/resetwelcome")]
+LOCKS_COMMANDS = [("lock", "/lock"), ("unlock", "/unlock"), ("locks", "/locks")]
 
 CMD_USAGE = {
     "play": f"{smallcaps('command')}: /play\n\n{smallcaps('use')}:\n• /play {smallcaps('song name')}\n• /play {smallcaps('youtube link')}\n• {smallcaps('reply to audio with')} /play\n\n{smallcaps('plays audio in voice chat.')}",
@@ -61,6 +62,9 @@ CMD_USAGE = {
     "welcome": f"{smallcaps('command')}: /welcome\n\n{smallcaps('use')}:\n• /welcome on\n• /welcome off\n\n{smallcaps('enable or disable welcome messages.')}\n{smallcaps('admin only.')}",
     "setwelcome": f"{smallcaps('command')}: /setwelcome\n\n{smallcaps('use')}:\n• /setwelcome {smallcaps('text')}\n• {smallcaps('reply to photo/video with')} /setwelcome\n• {smallcaps('reply to text with')} /setwelcome\n\n{smallcaps('placeholders')}:\n{{name}} {{fullname}} {{id}} {{mention}} {{username}} {{chat}}\n\n{smallcaps('button format')}:\n[Button Text](buttonurl:https://t.me/example)\n\n{smallcaps('sets custom welcome message with optional photo/video and buttons.')}\n{smallcaps('admin only.')}",
     "resetwelcome": f"{smallcaps('command')}: /resetwelcome\n\n{smallcaps('use')}: /resetwelcome\n\n{smallcaps('resets welcome message to default.')}\n{smallcaps('admin only.')}",
+    "lock": f"{smallcaps('command')}: /lock\n\n{smallcaps('use')}:\n• /lock url\n• /lock photo\n• /lock video\n• /lock all\n\n{smallcaps('locks a content type in the group.')}\n{smallcaps('locked messages from non-admins are auto-deleted.')}\n{smallcaps('admin / owner / sudo only.')}\n\n{smallcaps('types')}: all url photo video document sticker gif voice videonote audio contact location poll game forward bot command text invitelink phone email emoji media",
+    "unlock": f"{smallcaps('command')}: /unlock\n\n{smallcaps('use')}:\n• /unlock url\n• /unlock photo\n• /unlock all\n\n{smallcaps('unlocks a content type.')}\n{smallcaps('admin / owner / sudo only.')}",
+    "locks": f"{smallcaps('command')}: /locks\n\n{smallcaps('use')}: /locks\n\n{smallcaps('shows all active locks in this group.')}\n{smallcaps('admin / owner / sudo only.')}",
 }
 
 
@@ -109,7 +113,8 @@ def help_menu_markup() -> InlineKeyboardMarkup:
         _btn(smallcaps("welcome"), _SUCCESS, callback_data="welcome_menu"),
     ])
     rows.append([
-        _btn("🎮 " + smallcaps("games"), _PRIMARY, callback_data="games_menu"),
+        _btn("🔒 " + smallcaps("locks"), _PRIMARY, callback_data="locks_menu"),
+        _btn("🎮 " + smallcaps("games"), _SUCCESS, callback_data="games_menu"),
     ])
     rows.append([_btn(smallcaps("🔙 back"), _DANGER, callback_data="home_menu")])
     return InlineKeyboardMarkup(rows)
@@ -150,6 +155,20 @@ def welcome_menu_markup() -> InlineKeyboardMarkup:
     ])
 
 
+def locks_menu_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            _btn(smallcaps("lock"), _DANGER, callback_data="cmdhelp|lock"),
+            _btn(smallcaps("unlock"), _SUCCESS, callback_data="cmdhelp|unlock"),
+        ],
+        [_btn(smallcaps("locks"), _PRIMARY, callback_data="cmdhelp|locks")],
+        [
+            _btn(smallcaps("📋 commands"), _SUCCESS, callback_data="help_menu"),
+            _btn(smallcaps("🔙 start"), _DANGER, callback_data="home_menu"),
+        ],
+    ])
+
+
 def cmd_help_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[_btn(smallcaps("📋 commands"), _SUCCESS, callback_data="help_menu"), _btn(smallcaps("🔙 start"), _DANGER, callback_data="home_menu")]])
 
@@ -171,6 +190,7 @@ def help_list_caption() -> str:
         f"{smallcaps('chatbot = chaton chatoff')}\n"
         f"{smallcaps('abuse = noabuse filter')}\n"
         f"{smallcaps('welcome = setwelcome resetwelcome')}\n"
+        f"{smallcaps('locks = lock unlock content types')}\n"
         f"{smallcaps('games = economy rpg fun')}"
     )
     return f"<blockquote expandable>{body}</blockquote>"
@@ -190,6 +210,20 @@ def abuse_list_caption() -> str:
 
 def welcome_list_caption() -> str:
     return f"<blockquote expandable>{smallcaps('welcome commands')}\n\n{smallcaps('set custom welcome messages for new members.')}\n{smallcaps('supports text, photo, video and buttons.')}\n{smallcaps('tap a button to see usage.')}</blockquote>"
+
+
+def locks_list_caption() -> str:
+    body = (
+        f"{smallcaps('locks')}\n\n"
+        f"{smallcaps('lock content types in your group like rose bot.')}\n"
+        f"{smallcaps('example')}: /lock url\n"
+        f"{smallcaps('when locked, non-admin messages are auto-deleted.')}\n\n"
+        f"{smallcaps('types')}: all url photo video document sticker gif voice "
+        f"videonote audio contact location poll game forward bot command text "
+        f"invitelink phone email emoji media\n\n"
+        f"{smallcaps('admin owner sudo only. bot needs delete messages right.')}"
+    )
+    return f"<blockquote expandable>{body}</blockquote>"
 
 
 def cmd_usage_caption(key: str) -> str:
@@ -308,6 +342,14 @@ async def welcome_menu_cb(client, query):
     if await block_cb_if_maintenance(query):
         return
     await _edit_menu(query, welcome_list_caption(), welcome_menu_markup())
+    await query.answer()
+
+
+@bot.on_callback_query(rgx("locks_menu"))
+async def locks_menu_cb(client, query):
+    if await block_cb_if_maintenance(query):
+        return
+    await _edit_menu(query, locks_list_caption(), locks_menu_markup())
     await query.answer()
 
 
