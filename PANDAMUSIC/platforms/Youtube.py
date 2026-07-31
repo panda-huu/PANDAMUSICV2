@@ -16,9 +16,13 @@ def check_duration(file_path: str) -> float:
     try:
         out = subprocess.check_output(
             [
-                "ffprobe", "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
                 file_path,
             ],
             stderr=subprocess.DEVNULL,
@@ -27,6 +31,30 @@ def check_duration(file_path: str) -> float:
         return float(out.strip())
     except Exception:
         return 0.0
+
+
+def has_video_stream(file_path: str) -> bool:
+    """True if file has at least one video stream."""
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+                file_path,
+            ],
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+        return b"video" in out.lower()
+    except Exception:
+        return False
 
 
 def _to_vidid(value: str) -> str:
@@ -51,7 +79,6 @@ def _parse_thumb(r: dict) -> str:
         url = first.get("url")
         if url:
             return _safe_str(url).split("?")[0]
-    # common alt keys
     for key in ("thumbnail", "thumb", "image"):
         val = r.get(key)
         if isinstance(val, str) and val:
@@ -90,8 +117,9 @@ def _normalize_result(r: dict) -> Optional[Dict[str, Any]]:
         return None
 
     title = _safe_str(r.get("title"), "Unknown")
-    duration = _safe_str(r.get("duration") or r.get("duration_min") or r.get("duration_string"), "0:00")
-    # yt-dlp sometimes gives seconds as int
+    duration = _safe_str(
+        r.get("duration") or r.get("duration_min") or r.get("duration_string"), "0:00"
+    )
     if isinstance(r.get("duration"), (int, float)) and r.get("duration"):
         secs = int(r["duration"])
         m, s = divmod(secs, 60)
@@ -111,7 +139,6 @@ def _normalize_result(r: dict) -> Optional[Dict[str, Any]]:
 
 
 async def _search_yts(query: str) -> Optional[Dict[str, Any]]:
-    """Primary: youtube-search-python (may break when YT HTML changes)."""
     try:
         from youtubesearchpython.__future__ import VideosSearch
 
@@ -128,7 +155,6 @@ async def _search_yts(query: str) -> Optional[Dict[str, Any]]:
 
 
 async def _search_ytdlp(query: str) -> Optional[Dict[str, Any]]:
-    """Fallback: yt-dlp ytsearch — more reliable."""
     try:
         import yt_dlp
 
@@ -149,7 +175,6 @@ async def _search_ytdlp(query: str) -> Optional[Dict[str, Any]]:
         for entry in entries:
             if not entry:
                 continue
-            # flat entries use 'id' / 'title' / 'duration' / 'url'
             parsed = _normalize_result(
                 {
                     "id": entry.get("id"),
@@ -175,7 +200,6 @@ async def search(query: str) -> Optional[Dict[str, Any]]:
 
     q = str(query).strip()
 
-    # Direct YouTube URL / video id
     if "youtube.com" in q or "youtu.be" in q or (len(q) == 11 and " " not in q):
         vidid = _to_vidid(q)
         if vidid and len(vidid) >= 10:
@@ -188,12 +212,10 @@ async def search(query: str) -> Optional[Dict[str, Any]]:
                 "channel": "YouTube Music",
             }
 
-    # 1) youtube-search-python
     result = await _search_yts(q)
     if result:
         return result
 
-    # 2) yt-dlp fallback
     result = await _search_ytdlp(q)
     if result:
         return result
@@ -202,7 +224,17 @@ async def search(query: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-async def _download(vidid: str, media_type: str, ext: str, timeout_total: int) -> Optional[str]:
+def _safe_remove(path: str):
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+async def _download_api(
+    vidid: str, media_type: str, ext: str, timeout_total: int
+) -> Optional[str]:
     vidid = _to_vidid(vidid)
     if not vidid or len(vidid) < 3:
         return None
@@ -211,27 +243,33 @@ async def _download(vidid: str, media_type: str, ext: str, timeout_total: int) -
     file_path = os.path.join(DOWNLOAD_DIR, f"{vidid}.{ext}")
     loop = asyncio.get_event_loop()
 
+    # Reuse cache only if valid (and for video, must have video stream)
     try:
         if os.path.exists(file_path) and os.path.getsize(file_path) > 1024:
             dur = await loop.run_in_executor(None, check_duration, file_path)
-            if dur and dur > 2:
+            ok = dur and dur > 2
+            if ok and media_type == "video":
+                ok = await loop.run_in_executor(None, has_video_stream, file_path)
+            if ok:
                 return file_path
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
+            _safe_remove(file_path)
     except Exception:
         pass
 
     if not API_KEY:
-        print("[Youtube] API_KEY missing — download skip", flush=True)
+        print("[Youtube] API_KEY missing — API download skip", flush=True)
         return None
 
     full_url = f"https://www.youtube.com/watch?v={vidid}"
     url_variants = [full_url, vidid]
+    # Some APIs use different type names
+    type_variants = [media_type]
+    if media_type == "video":
+        type_variants = ["video", "mp4", "Video"]
 
     for attempt in range(4):
         use_url = url_variants[attempt % len(url_variants)]
+        use_type = type_variants[attempt % len(type_variants)]
         try:
             timeout = aiohttp.ClientTimeout(total=timeout_total, connect=25)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -239,7 +277,7 @@ async def _download(vidid: str, media_type: str, ext: str, timeout_total: int) -
                     f"{API_URL.rstrip('/')}/download",
                     params={
                         "url": use_url,
-                        "type": media_type,
+                        "type": use_type,
                         "api_key": API_KEY,
                     },
                 ) as resp:
@@ -250,7 +288,7 @@ async def _download(vidid: str, media_type: str, ext: str, timeout_total: int) -
                         if retry_after and str(retry_after).isdigit():
                             wait = float(retry_after)
                         print(
-                            f"[Youtube] {media_type} 429 — wait {wait}s (try {attempt+1})",
+                            f"[Youtube] {use_type} 429 — wait {wait}s (try {attempt+1})",
                             flush=True,
                         )
                         await asyncio.sleep(wait)
@@ -260,7 +298,7 @@ async def _download(vidid: str, media_type: str, ext: str, timeout_total: int) -
                         body = (await resp.text())[:250]
                         wait = min(15, 2 ** attempt)
                         print(
-                            f"[Youtube] {media_type} HTTP {resp.status}: {body} "
+                            f"[Youtube] {use_type} HTTP {resp.status}: {body} "
                             f"(try {attempt+1}, wait {wait}s)",
                             flush=True,
                         )
@@ -270,7 +308,7 @@ async def _download(vidid: str, media_type: str, ext: str, timeout_total: int) -
                     if resp.status != 200:
                         body = (await resp.text())[:250]
                         print(
-                            f"[Youtube] {media_type} HTTP {resp.status}: {body} "
+                            f"[Youtube] {use_type} HTTP {resp.status}: {body} "
                             f"(try {attempt+1})",
                             flush=True,
                         )
@@ -286,56 +324,147 @@ async def _download(vidid: str, media_type: str, ext: str, timeout_total: int) -
                 continue
 
             dur = await loop.run_in_executor(None, check_duration, file_path)
-            if dur and dur > 2:
-                return file_path
+            if not (dur and dur > 2):
+                print(
+                    f"[Youtube] {use_type} invalid duration ({dur}s) — retry",
+                    flush=True,
+                )
+                _safe_remove(file_path)
+                await asyncio.sleep(1.5)
+                continue
 
-            print(
-                f"[Youtube] {media_type} invalid duration ({dur}s) — retry",
-                flush=True,
-            )
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
+            if media_type == "video":
+                has_v = await loop.run_in_executor(None, has_video_stream, file_path)
+                print(
+                    f"[Youtube] API video file size={os.path.getsize(file_path)} "
+                    f"has_video={has_v}",
+                    flush=True,
+                )
+                if not has_v:
+                    _safe_remove(file_path)
+                    # don't keep retrying same audio-only API response forever
+                    if attempt >= 1:
+                        return None
+                    await asyncio.sleep(1)
+                    continue
+
+            return file_path
 
         except asyncio.TimeoutError:
-            print(f"[Youtube] {media_type} timeout (try {attempt+1})", flush=True)
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-            except Exception:
-                pass
+            print(f"[Youtube] {use_type} timeout (try {attempt+1})", flush=True)
+            _safe_remove(file_path)
         except Exception as e:
             print(
-                f"[Youtube] {media_type} error (try {attempt+1}): {e}",
+                f"[Youtube] {use_type} error (try {attempt+1}): {e}",
                 flush=True,
             )
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-            except Exception:
-                pass
+            _safe_remove(file_path)
 
         await asyncio.sleep(1.5)
 
-    print(
-        f"[Youtube] {media_type} FAILED after retries for {vidid}",
-        flush=True,
-    )
+    print(f"[Youtube] {media_type} API FAILED for {vidid}", flush=True)
     return None
+
+
+async def _download_ytdlp_video(vidid: str) -> Optional[str]:
+    """Fallback: download real video with yt-dlp (merged mp4)."""
+    try:
+        import yt_dlp
+    except Exception as e:
+        print(f"[Youtube] yt-dlp not available: {e}", flush=True)
+        return None
+
+    vidid = _to_vidid(vidid)
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    out_tmpl = os.path.join(DOWNLOAD_DIR, f"{vidid}.%(ext)s")
+    final_path = os.path.join(DOWNLOAD_DIR, f"{vidid}.mp4")
+
+    def _run():
+        # Prefer <=720p for VC bandwidth
+        opts = {
+            "format": (
+                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/n"
+                "bestvideo[height<=720]+bestaudio/"
+                "best[height<=720]/n"
+                "best"
+            ),
+            "outtmpl": out_tmpl,
+            "quiet": True,
+            "no_warnings": True,
+            "merge_output_format": "mp4",
+            "noprogress": True,
+            "retries": 3,
+            "fragment_retries": 3,
+        }
+        url = f"https://www.youtube.com/watch?v={vidid}"
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+
+        # yt-dlp may write .mp4 directly
+        if os.path.exists(final_path) and os.path.getsize(final_path) > 1024:
+            return final_path
+
+        # search for produced file
+        for name in os.listdir(DOWNLOAD_DIR):
+            if name.startswith(vidid) and name.endswith((".mp4", ".mkv", ".webm")):
+                path = os.path.join(DOWNLOAD_DIR, name)
+                if os.path.getsize(path) > 1024:
+                    # rename to standard .mp4 name if needed
+                    if path != final_path and name.endswith(".mp4"):
+                        try:
+                            os.replace(path, final_path)
+                            return final_path
+                        except Exception:
+                            return path
+                    return path
+        return None
+
+    try:
+        print(f"[Youtube] yt-dlp video download for {vidid}...", flush=True)
+        path = await asyncio.to_thread(_run)
+        if not path:
+            print("[Youtube] yt-dlp produced no file", flush=True)
+            return None
+
+        if not has_video_stream(path):
+            print("[Youtube] yt-dlp file has no video stream", flush=True)
+            _safe_remove(path)
+            return None
+
+        print(
+            f"[Youtube] yt-dlp OK path={path} size={os.path.getsize(path)}",
+            flush=True,
+        )
+        return path
+    except Exception as e:
+        print(f"[Youtube] yt-dlp video error: {e}", flush=True)
+        return None
 
 
 async def download_song(vidid: str) -> Optional[str]:
     try:
-        return await _download(vidid, "audio", "mp3", 100)
+        return await _download_api(vidid, "audio", "mp3", 100)
     except Exception as e:
         print(f"[Youtube.download_song] {e}", flush=True)
         return None
 
 
 async def download_video(vidid: str) -> Optional[str]:
+    """Download video: API first, then yt-dlp if API returns audio-only."""
     try:
-        return await _download(vidid, "video", "mp4", 160)
+        path = await _download_api(vidid, "video", "mp4", 180)
+        if path and has_video_stream(path):
+            return path
+
+        if path:
+            print(
+                "[Youtube] API returned file without video — trying yt-dlp",
+                flush=True,
+            )
+            _safe_remove(path)
+
+        path = await _download_ytdlp_video(vidid)
+        return path
     except Exception as e:
         print(f"[Youtube.download_video] {e}", flush=True)
         return None
