@@ -348,6 +348,51 @@ async def make_thumbnail(image, title, channel, duration, output):
     return await create_music_thumbnail(image, title, channel, duration, output)
 
 
+def build_media_stream(file_path: str, is_video: bool, start_sec: int = 0):
+    """Build MediaStream for audio or video. Video uses VideoQuality."""
+    from pytgcalls.types import AudioQuality, MediaStream
+
+    start_sec = max(0, int(start_sec or 0))
+    kwargs = {
+        "media_path": file_path,
+        "audio_parameters": AudioQuality.HIGH,
+    }
+
+    if is_video:
+        # Prefer explicit video quality so VC shows video
+        video_param = None
+        try:
+            from pytgcalls.types import VideoQuality
+
+            for name in ("HD_720p", "SD_480p", "SD_360p", "HD_1080p"):
+                if hasattr(VideoQuality, name):
+                    video_param = getattr(VideoQuality, name)
+                    break
+        except Exception:
+            video_param = None
+
+        if video_param is not None:
+            kwargs["video_parameters"] = video_param
+        else:
+            kwargs["video_flags"] = MediaStream.Flags.AUTO_DETECT
+    else:
+        kwargs["video_flags"] = MediaStream.Flags.IGNORE
+
+    if start_sec > 0:
+        ff = f"-ss {start_sec}"
+        for key, val in (
+            ("ffmpeg_parameters", ff),
+            ("ffmpeg_parameters_before", ff),
+            ("ffmpeg_parameters", ["-ss", str(start_sec)]),
+        ):
+            try:
+                return MediaStream(**{**kwargs, key: val})
+            except TypeError:
+                continue
+
+    return MediaStream(**kwargs)
+
+
 @bot.on_message(cdz(["play", "vplay"]) & ~filters.private)
 async def start_stream_in_vc(client, message):
     if await block_if_maintenance(message):
@@ -356,14 +401,12 @@ async def start_stream_in_vc(client, message):
     import time
     import traceback
 
-    from pytgcalls.types import AudioQuality, MediaStream
-
     from ..platforms import Youtube
     from .callbacks import player_markup, queue_markup, start_progress_task
 
     chat_id = message.chat.id
     mention = message.from_user.mention if message.from_user else "User"
-    is_video = message.command[0] == "vplay"
+    is_video = message.command[0].lower() == "vplay"
 
     try:
         await message.delete()
@@ -384,7 +427,7 @@ async def start_stream_in_vc(client, message):
     if not info:
         return await aux.edit("Song not found.")
 
-    await aux.edit(f"Downloading {info['title']}...")
+    await aux.edit(f"Downloading {'video' if is_video else 'audio'}: {info['title']}...")
 
     try:
         if is_video:
@@ -397,14 +440,18 @@ async def start_stream_in_vc(client, message):
     if not file_path:
         return await aux.edit("Download failed - API se file nahi mili.")
 
+    # Safety: video file should be mp4-ish; if only audio got downloaded, warn
     try:
-        media_stream = MediaStream(
-            media_path=file_path,
-            audio_parameters=AudioQuality.HIGH,
-            video_flags=(
-                MediaStream.Flags.AUTO_DETECT if is_video else MediaStream.Flags.IGNORE
-            ),
+        size = os.path.getsize(file_path)
+        print(
+            f"[stream] is_video={is_video} path={file_path} size={size}",
+            flush=True,
         )
+    except Exception:
+        pass
+
+    try:
+        media_stream = build_media_stream(file_path, is_video)
     except Exception as e:
         return await aux.edit(f"MediaStream error: {e}")
 
@@ -474,7 +521,7 @@ async def start_stream_in_vc(client, message):
             info["title"],
             info.get("duration_min", "0:00"),
             mention,
-            header="sᴛʀᴇᴀᴍɪɴɢ ɪɴ ᴠᴄ",
+            header="sᴛʀᴇᴀᴍɪɴɢ ɪɴ ᴠᴄ" + (" (ᴠɪᴅᴇᴏ)" if is_video else ""),
         )
         total_sec = convert_to_seconds(info.get("duration_min", "0:00"))
         buttons = player_markup(chat_id, 0, total_sec)
