@@ -248,23 +248,36 @@ class Call(PyTgCalls):
             return await self.close_stream(chat_id)
 
         aux = await bot.send_message(chat_id, "**Processing...**")
-        media_stream = queued[0].get("media_stream")
+
+        item = queued[0]
+        file_path = item.get("file_path")
+        is_video = bool(item.get("is_video", False))
+        media_stream = item.get("media_stream")
+
+        # Rebuild stream properly for video if we have file path
+        if file_path:
+            try:
+                media_stream = self._build_media_stream(file_path, is_video, 0)
+                item["media_stream"] = media_stream
+            except Exception as e:
+                print(f"[change_stream rebuild] {e}", flush=True)
 
         await self.start_stream(chat_id, media_stream)
         self.start_times[chat_id] = time.time()
         self.paused[chat_id] = False
 
-        thumbnail = queued[0].get("thumbnail") or ""
-        title = queued[0].get("title") or "Unknown"
-        duration = queued[0].get("duration") or "0:00"
-        mention = queued[0].get("requested_by") or "User"
+        thumbnail = item.get("thumbnail") or ""
+        title = item.get("title") or "Unknown"
+        duration = item.get("duration") or "0:00"
+        mention = item.get("requested_by") or "User"
         total_sec = _parse_duration(duration)
 
         caption = panel_caption(
             title,
             duration,
             mention,
-            header="sᴛᴀʀᴛᴇᴅ sᴛʀᴇᴀᴍɪɴɢ ᴏɴ ᴠᴄ",
+            header="sᴛᴀʀᴛᴇᴅ sᴛʀᴇᴀᴍɪɴɢ ᴏɴ ᴠᴄ"
+            + (" (ᴠɪᴅᴇᴏ)" if is_video else ""),
         )
         buttons = player_markup(chat_id, 0, total_sec)
 
@@ -297,8 +310,8 @@ class Call(PyTgCalls):
                 parse_mode=ParseMode.HTML,
             )
 
-        queued[0]["panel"] = panel
-        queued[0]["played"] = 0
+        item["panel"] = panel
+        item["played"] = 0
         start_progress_task(chat_id)
 
     async def start_stream(self, chat_id: int, media_stream):
@@ -351,28 +364,42 @@ class Call(PyTgCalls):
     def _build_media_stream(self, file_path: str, is_video: bool, start_sec: int = 0):
         from pytgcalls.types import AudioQuality, MediaStream
 
-        start_sec = max(0, int(start_sec))
+        start_sec = max(0, int(start_sec or 0))
         kwargs = {
             "media_path": file_path,
             "audio_parameters": AudioQuality.HIGH,
-            "video_flags": (
-                MediaStream.Flags.AUTO_DETECT if is_video else MediaStream.Flags.IGNORE
-            ),
         }
 
-        # ffmpeg -ss for seek position (works for local audio/video files)
+        if is_video:
+            video_param = None
+            try:
+                from pytgcalls.types import VideoQuality
+
+                for name in ("HD_720p", "SD_480p", "SD_360p", "HD_1080p"):
+                    if hasattr(VideoQuality, name):
+                        video_param = getattr(VideoQuality, name)
+                        break
+            except Exception:
+                video_param = None
+
+            if video_param is not None:
+                kwargs["video_parameters"] = video_param
+            else:
+                kwargs["video_flags"] = MediaStream.Flags.AUTO_DETECT
+        else:
+            kwargs["video_flags"] = MediaStream.Flags.IGNORE
+
         if start_sec > 0:
             ff = f"-ss {start_sec}"
-            for key in ("ffmpeg_parameters", "ffmpeg_parameters_before"):
+            for key, val in (
+                ("ffmpeg_parameters", ff),
+                ("ffmpeg_parameters_before", ff),
+                ("ffmpeg_parameters", ["-ss", str(start_sec)]),
+            ):
                 try:
-                    return MediaStream(**{**kwargs, key: ff})
+                    return MediaStream(**{**kwargs, key: val})
                 except TypeError:
                     continue
-            # list form
-            try:
-                return MediaStream(**{**kwargs, "ffmpeg_parameters": ["-ss", str(start_sec)]})
-            except TypeError:
-                pass
 
         return MediaStream(**kwargs)
 
@@ -388,7 +415,6 @@ class Call(PyTgCalls):
         is_video = bool(item.get("is_video", False))
 
         if not file_path:
-            # try recover path from media_stream if present
             ms = item.get("media_stream")
             file_path = getattr(ms, "media_path", None) or getattr(ms, "path", None)
 
@@ -397,7 +423,6 @@ class Call(PyTgCalls):
 
         assistant = await group_assistant(self, chat_id)
 
-        # 1) Native seek if available
         for method_name in ("seek_stream", "seek"):
             method = getattr(assistant, method_name, None)
             if not callable(method):
@@ -414,7 +439,6 @@ class Call(PyTgCalls):
             except Exception:
                 pass
 
-        # 2) Rebuild MediaStream from file starting at position
         media = self._build_media_stream(file_path, is_video, position)
         await assistant.play(chat_id, media, config=self.call_config)
         item["media_stream"] = media
@@ -422,7 +446,6 @@ class Call(PyTgCalls):
         if chat_id not in self.active_chats:
             self.active_chats.append(chat_id)
 
-        # if was paused, keep playing after seek
         self.paused[chat_id] = False
 
     async def add_to_queue(
@@ -439,7 +462,6 @@ class Call(PyTgCalls):
         if chat_id not in self.queue:
             self.queue[chat_id] = []
 
-        # recover path from stream object if not passed
         if not file_path and media_stream is not None:
             file_path = getattr(media_stream, "media_path", None) or getattr(
                 media_stream, "path", None
