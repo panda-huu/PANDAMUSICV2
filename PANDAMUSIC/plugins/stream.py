@@ -152,27 +152,22 @@ async def create_music_thumbnail(
     duration_seconds=None,
     output_path="thumbnail.png",
 ):
-    """Modern player-style panel: left cover, right controls, bottom powered-by."""
     title = (title or "Unknown Title").strip() or "Unknown Title"
     artist = (artist or "Unknown Artist").strip() or "Unknown Artist"
 
     if duration_seconds is None or duration_seconds == 0 or duration_seconds == "live":
         tot_sec = 0
-        total_time = "Live"
         cur_sec = 0
         current_time = "0:00"
         remain_time = "Live"
     else:
         tot_sec = int(duration_seconds)
-        total_time = seconds_to_hhmmss(tot_sec)
-        # show early progress like a real player (~3-8%)
         cur_sec = max(1, min(tot_sec // 20, 12)) if tot_sec else 0
         current_time = seconds_to_hhmmss(cur_sec)
         remain_time = f"-{seconds_to_hhmmss(max(0, tot_sec - cur_sec))}"
 
     W, H = 1280, 720
 
-    # --- background: blurred cover + dark overlay ---
     try:
         cover_src = Image.open(cover_path).convert("RGBA")
     except Exception:
@@ -185,27 +180,21 @@ async def create_music_thumbnail(
 
     draw = ImageDraw.Draw(bg)
 
-    # fonts
     font_title = _load_font(36)
     font_artist = _load_font(26)
     font_time = _load_font(22)
     font_power = _load_font(24)
     font_power2 = _load_font(20)
 
-    # --- layout positions (match screenshot style) ---
     cover_size = 420
     cover_x = 80
     cover_y = (H - cover_size) // 2 - 20
     cover_img = _rounded_cover(cover_src, cover_size, radius=32)
     bg.paste(cover_img, (cover_x, cover_y), cover_img)
 
-    # soft shadow under cover
-    # (already blended via rounded paste)
-
     right_x = cover_x + cover_size + 70
     right_w = W - right_x - 80
 
-    # title + artist
     title_draw = trim_text(draw, title, font_title, right_w - 20)
     artist_draw = trim_text(draw, artist, font_artist, right_w - 20)
     title_y = cover_y + 40
@@ -217,7 +206,6 @@ async def create_music_thumbnail(
         fill=(200, 200, 210, 255),
     )
 
-    # progress bar
     bar_x = right_x
     bar_y = title_y + 130
     bar_w = right_w
@@ -225,24 +213,20 @@ async def create_music_thumbnail(
     ratio = (cur_sec / tot_sec) if tot_sec else 0.05
     fill_w = max(6, int(bar_w * min(ratio, 1.0)))
 
-    # track
     draw.rounded_rectangle(
         [bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
         radius=4,
         fill=(255, 255, 255, 55),
     )
-    # filled
     draw.rounded_rectangle(
         [bar_x, bar_y, bar_x + fill_w, bar_y + bar_h],
         radius=4,
         fill=(255, 255, 255, 230),
     )
-    # knob
     kx = bar_x + fill_w
     ky = bar_y + bar_h // 2
     draw.ellipse([kx - 8, ky - 8, kx + 8, ky + 8], fill=(255, 255, 255, 255))
 
-    # times under bar
     draw.text((bar_x, bar_y + 18), current_time, font=font_time, fill=(220, 220, 230, 255))
     rem_bbox = draw.textbbox((0, 0), remain_time, font=font_time)
     rem_w = rem_bbox[2] - rem_bbox[0]
@@ -253,33 +237,27 @@ async def create_music_thumbnail(
         fill=(220, 220, 230, 255),
     )
 
-    # transport controls: prev | pause | next
     cx = right_x + right_w // 2
     cy = bar_y + 110
     icon_gap = 90
     white = (255, 255, 255, 255)
 
-    # previous
     px = cx - icon_gap
     draw.polygon([(px + 14, cy - 16), (px + 14, cy + 16), (px - 14, cy)], fill=white)
     draw.rectangle([px - 18, cy - 16, px - 12, cy + 16], fill=white)
 
-    # pause
     draw.rectangle([cx - 16, cy - 20, cx - 6, cy + 20], fill=white)
     draw.rectangle([cx + 6, cy - 20, cx + 16, cy + 20], fill=white)
 
-    # next
     nx = cx + icon_gap
     draw.polygon([(nx - 14, cy - 16), (nx - 14, cy + 16), (nx + 14, cy)], fill=white)
     draw.rectangle([nx + 12, cy - 16, nx + 18, cy + 16], fill=white)
 
-    # volume bar
     vol_y = cy + 70
     vol_x = right_x + 40
     vol_w = right_w - 80
     vol_h = 6
     vol_fill = int(vol_w * 0.65)
-    # speaker icon (simple)
     sx = vol_x - 30
     draw.polygon(
         [(sx - 6, vol_y - 8), (sx + 6, vol_y - 14), (sx + 6, vol_y + 14), (sx - 6, vol_y + 8)],
@@ -302,14 +280,12 @@ async def create_music_thumbnail(
         fill=white,
     )
 
-    # --- bottom powered-by footer (center) ---
     footer_y1 = H - 95
     footer_y2 = H - 58
     _draw_center_text(draw, POWERED_LINE_1, footer_y1, font_power, (255, 255, 255, 230), W)
     _draw_center_text(draw, POWERED_LINE_2, footer_y2, font_power2, (200, 200, 210, 210), W)
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    # save as RGB jpeg-friendly
     final = bg.convert("RGB")
     final.save(output_path, quality=92)
     return output_path
@@ -344,7 +320,6 @@ async def generate_player_thumbnail(
     artist: str,
     duration_min: str,
 ) -> str:
-    """Download cover + draw full player panel thumbnail."""
     os.makedirs(CACHE_DIR, exist_ok=True)
     out = os.path.join(CACHE_DIR, f"panel_{abs(hash(title + str(thumb_url)))}.jpg")
     cover = await _download_cover(thumb_url)
@@ -352,7 +327,6 @@ async def generate_player_thumbnail(
         if os.path.isfile(FALLBACK_THUMB):
             cover = FALLBACK_THUMB
         else:
-            # solid fallback cover
             cover = os.path.join(CACHE_DIR, "blank_cover.jpg")
             Image.new("RGB", (500, 500), (40, 40, 50)).save(cover)
 
@@ -367,7 +341,6 @@ async def generate_player_thumbnail(
 
 
 async def generate_thumbnail(url: str) -> str:
-    """Legacy simple resize (kept for compatibility)."""
     return await _download_cover(url)
 
 
@@ -448,6 +421,8 @@ async def start_stream_in_vc(client, message):
                 info.get("duration_min", "0:00"),
                 info.get("thumbnail", ""),
                 mention,
+                file_path=file_path,
+                is_video=is_video,
             )
             text = queue_caption(
                 pos,
@@ -472,6 +447,8 @@ async def start_stream_in_vc(client, message):
             info.get("duration_min", "0:00"),
             info.get("thumbnail", ""),
             mention,
+            file_path=file_path,
+            is_video=is_video,
         )
         if not hasattr(call, "start_times"):
             call.start_times = {}
@@ -487,7 +464,6 @@ async def start_stream_in_vc(client, message):
         return await aux.edit(f"Failed to start stream: {e}\n\n{tb[-500:]}")
 
     try:
-        # Player-style drawn thumbnail (cover + controls + powered by)
         thumb = await generate_player_thumbnail(
             info.get("thumbnail", ""),
             info.get("title", "Unknown"),
@@ -519,6 +495,8 @@ async def start_stream_in_vc(client, message):
         if chat_id in call.queue and call.queue[chat_id]:
             call.queue[chat_id][0]["panel"] = panel
             call.queue[chat_id][0]["played"] = 0
+            call.queue[chat_id][0]["file_path"] = file_path
+            call.queue[chat_id][0]["is_video"] = is_video
         start_progress_task(chat_id)
     except Exception as e:
         print(f"[PANEL ERROR] {e}", flush=True)
