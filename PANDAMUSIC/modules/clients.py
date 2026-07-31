@@ -18,6 +18,9 @@ from pytgcalls.types import Call, GroupCallConfig, ChatUpdate, Update, StreamEnd
 assistants = []
 assistantids = []
 
+# Ignore stream_end if stream just started (prevents instant leave on bad video)
+STREAM_GRACE_SECONDS = 12
+
 
 class Bot(Client):
     def __init__(self):
@@ -230,6 +233,54 @@ class Call(PyTgCalls):
         except Exception as e:
             raise AssistantErr(f"Unexpected error while checking: {e}")
 
+    async def _restart_current_stream(self, chat_id: int) -> bool:
+        """Restart current track. Video → try audio-only if video keeps dying."""
+        queued = self.queue.get(chat_id) or []
+        if not queued:
+            return False
+
+        item = queued[0]
+        restarts = int(item.get("_restarts", 0))
+        if restarts >= 2:
+            print(f"[stream_end] max restarts reached for chat {chat_id}", flush=True)
+            return False
+
+        file_path = item.get("file_path")
+        if not file_path:
+            ms = item.get("media_stream")
+            file_path = getattr(ms, "media_path", None) or getattr(ms, "path", None)
+
+        if not file_path:
+            return False
+
+        is_video = bool(item.get("is_video", False))
+        # First restart on video: fall back to audio-only (keeps assistant in VC)
+        force_audio = is_video and restarts >= 0
+
+        try:
+            if force_audio:
+                print(
+                    f"[stream_end] video died early — falling back to audio chat={chat_id}",
+                    flush=True,
+                )
+                media = self._build_media_stream(file_path, False, 0)
+                item["is_video"] = False
+            else:
+                media = self._build_media_stream(file_path, is_video, 0)
+
+            item["media_stream"] = media
+            item["_restarts"] = restarts + 1
+            item["played"] = 0
+
+            await self.start_stream(chat_id, media)
+            self.start_times[chat_id] = time.time()
+            self.paused[chat_id] = False
+            print(f"[stream_end] restarted stream chat={chat_id} audio_only={force_audio}", flush=True)
+            return True
+        except Exception as e:
+            print(f"[stream_end] restart failed: {e}", flush=True)
+            return False
+
     async def change_stream(self, chat_id: int):
         from .. import bot
         from PANDAMUSIC.plugins.callbacks import (
@@ -265,6 +316,7 @@ class Call(PyTgCalls):
         await self.start_stream(chat_id, media_stream)
         self.start_times[chat_id] = time.time()
         self.paused[chat_id] = False
+        item["_restarts"] = 0
 
         thumbnail = item.get("thumbnail") or ""
         title = item.get("title") or "Unknown"
@@ -316,30 +368,46 @@ class Call(PyTgCalls):
 
     async def start_stream(self, chat_id: int, media_stream):
         assistant = await group_assistant(self, chat_id)
+
+        # Always try to keep assistant in the group first
+        try:
+            await self.ensure_assistant_in_chat(chat_id)
+        except Exception as e:
+            print(f"[ensure_assistant pre-play] {e}", flush=True)
+
         try:
             await assistant.play(chat_id, media_stream, config=self.call_config)
             if chat_id not in self.active_chats:
                 self.active_chats.append(chat_id)
+            return
         except NoActiveGroupCall:
-            try:
-                await self.ensure_assistant_in_chat(chat_id)
-            except Exception as e:
-                print(f"[ensure_assistant] {e}", flush=True)
+            pass
+        except Exception as e:
+            print(f"[start_stream play error] {e}", flush=True)
 
-            try:
-                await assistant.play(
-                    chat_id,
-                    media_stream,
-                    config=GroupCallConfig(auto_start=True),
-                )
-                if chat_id not in self.active_chats:
-                    self.active_chats.append(chat_id)
-            except NoActiveGroupCall:
-                raise AssistantErr(
-                    "No active Voice Chat.\n\n"
-                    "Pehle group mein Voice Chat / Video Chat start karo, "
-                    "phir /play ya /vplay use karo."
-                )
+        # Retry once after ensuring join
+        try:
+            await self.ensure_assistant_in_chat(chat_id)
+        except Exception as e:
+            print(f"[ensure_assistant] {e}", flush=True)
+
+        try:
+            await assistant.play(
+                chat_id,
+                media_stream,
+                config=GroupCallConfig(auto_start=True),
+            )
+            if chat_id not in self.active_chats:
+                self.active_chats.append(chat_id)
+        except NoActiveGroupCall:
+            raise AssistantErr(
+                "No active Voice Chat.\n\n"
+                "Pehle group mein Voice Chat / Video Chat start karo, "
+                "phir /play ya /vplay use karo."
+            )
+        except Exception as e:
+            print(f"[start_stream retry error] {e}", flush=True)
+            raise
 
     async def pause_stream(self, chat_id: int):
         assistant = await group_assistant(self, chat_id)
@@ -365,17 +433,17 @@ class Call(PyTgCalls):
         from pytgcalls.types import AudioQuality, MediaStream
 
         start_sec = max(0, int(start_sec or 0))
-        kwargs = {
-            "media_path": file_path,
-            "audio_parameters": AudioQuality.HIGH,
-        }
+
+        # Prefer stable lower quality for VC — high res video often kills the call
+        attempts = []
 
         if is_video:
             video_param = None
             try:
                 from pytgcalls.types import VideoQuality
 
-                for name in ("HD_720p", "SD_480p", "SD_360p", "HD_1080p"):
+                # Prefer lower quality first for stability in Telegram VC
+                for name in ("SD_360p", "SD_480p", "HD_720p", "HD_1080p", "FHD_1080p"):
                     if hasattr(VideoQuality, name):
                         video_param = getattr(VideoQuality, name)
                         break
@@ -383,25 +451,83 @@ class Call(PyTgCalls):
                 video_param = None
 
             if video_param is not None:
-                kwargs["video_parameters"] = video_param
-            else:
-                kwargs["video_flags"] = MediaStream.Flags.AUTO_DETECT
+                attempts.append(
+                    dict(
+                        media_path=file_path,
+                        audio_parameters=AudioQuality.HIGH,
+                        video_parameters=video_param,
+                        audio_flags=MediaStream.Flags.REQUIRED,
+                        video_flags=MediaStream.Flags.AUTO_DETECT,
+                    )
+                )
+                attempts.append(
+                    dict(
+                        media_path=file_path,
+                        audio_parameters=AudioQuality.HIGH,
+                        video_parameters=video_param,
+                        audio_flags=MediaStream.Flags.REQUIRED,
+                        video_flags=MediaStream.Flags.REQUIRED,
+                    )
+                )
+                attempts.append(
+                    dict(
+                        media_path=file_path,
+                        audio_parameters=AudioQuality.HIGH,
+                        video_parameters=video_param,
+                    )
+                )
+
+            attempts.append(
+                dict(
+                    media_path=file_path,
+                    audio_parameters=AudioQuality.HIGH,
+                    video_flags=MediaStream.Flags.AUTO_DETECT,
+                )
+            )
+            attempts.append(
+                dict(
+                    media_path=file_path,
+                    audio_parameters=AudioQuality.HIGH,
+                    video_flags=MediaStream.Flags.REQUIRED,
+                )
+            )
         else:
-            kwargs["video_flags"] = MediaStream.Flags.IGNORE
+            attempts.append(
+                dict(
+                    media_path=file_path,
+                    audio_parameters=AudioQuality.HIGH,
+                    video_flags=MediaStream.Flags.IGNORE,
+                )
+            )
 
-        if start_sec > 0:
-            ff = f"-ss {start_sec}"
-            for key, val in (
-                ("ffmpeg_parameters", ff),
-                ("ffmpeg_parameters_before", ff),
-                ("ffmpeg_parameters", ["-ss", str(start_sec)]),
-            ):
-                try:
-                    return MediaStream(**{**kwargs, key: val})
-                except TypeError:
-                    continue
+        last_err = None
+        for kwargs in attempts:
+            if start_sec > 0:
+                kwargs = dict(kwargs)
+                kwargs["ffmpeg_parameters"] = f"-ss {start_sec}"
+            try:
+                stream = MediaStream(**kwargs)
+                print(
+                    f"[MediaStream OK] video={is_video} keys={list(kwargs.keys())}",
+                    flush=True,
+                )
+                return stream
+            except TypeError as e:
+                last_err = e
+                if start_sec > 0 and "ffmpeg" in str(e).lower():
+                    try:
+                        kwargs2 = {k: v for k, v in kwargs.items() if k != "ffmpeg_parameters"}
+                        stream = MediaStream(**kwargs2)
+                        return stream
+                    except Exception as e2:
+                        last_err = e2
+                        continue
+                continue
+            except Exception as e:
+                last_err = e
+                continue
 
-        return MediaStream(**kwargs)
+        raise RuntimeError(f"MediaStream build failed: {last_err}")
 
     async def seek_stream(self, chat_id: int, position: int):
         """Seek by restarting stream from position (local file + ffmpeg -ss)."""
@@ -476,6 +602,7 @@ class Call(PyTgCalls):
             "played": 0,
             "file_path": file_path,
             "is_video": bool(is_video),
+            "_restarts": 0,
         }
         self.queue[chat_id].append(item)
         return len(self.queue[chat_id]) - 1
@@ -574,4 +701,18 @@ class Call(PyTgCalls):
         @self.four.on_update(fl.stream_end())
         @self.five.on_update(fl.stream_end())
         async def stream_end_handler(_, update: Update):
-            return await self.change_stream(update.chat_id)
+            chat_id = update.chat_id
+            start = self.start_times.get(chat_id)
+            elapsed = (time.time() - start) if start else 999
+
+            # Premature end (common on bad / incompatible video) → restart instead of leave
+            if elapsed < STREAM_GRACE_SECONDS:
+                print(
+                    f"[stream_end] premature end after {elapsed:.1f}s chat={chat_id} — trying restart",
+                    flush=True,
+                )
+                ok = await self._restart_current_stream(chat_id)
+                if ok:
+                    return
+
+            return await self.change_stream(chat_id)
