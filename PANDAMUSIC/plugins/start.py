@@ -34,6 +34,7 @@ HELP_COMMANDS = [
     ("play", "/play"), ("vplay", "/vplay"), ("pause", "/pause"),
     ("resume", "/resume"), ("skip", "/skip"), ("end", "/end"),
     ("stats", "/stats"), ("active", "/active"), ("broadcast", "/broadcast"),
+    ("couple", "/couple"),
 ]
 ACTION_COMMANDS = [
     ("mute", "/mute"), ("unmute", "/unmute"), ("ban", "/ban"),
@@ -54,6 +55,7 @@ CMD_USAGE = {
     "stats": f"{smallcaps('command')}: /stats\n\n{smallcaps('use')}: /stats\n\n{smallcaps('shows system and bot statistics.')}",
     "active": f"{smallcaps('command')}: /active\n\n{smallcaps('use')}: /active\n\n{smallcaps('shows active voice chats. (owner only)')}",
     "broadcast": f"{smallcaps('command')}: /broadcast\n\n{smallcaps('use')}: /broadcast {smallcaps('message')}\n\n{smallcaps('broadcasts message to served users/chats. (owner only)')}",
+    "couple": f"{smallcaps('command')}: /couple\n\n{smallcaps('use')}: /couple\n\n{smallcaps('picks 2 random members and makes couple of the day image.')}\n{smallcaps('shows their profile photos with chemistry %.')}\n\n{smallcaps('anyone in the group can use this.')}\n{smallcaps('bot must be admin to list members.')}",
     "mute": f"{smallcaps('command')}: /mute\n\n{smallcaps('use')}:\n• {smallcaps('reply to user')}: /mute {smallcaps('reason')}\n• /mute @user {smallcaps('reason')}\n\n{smallcaps('mutes a user in the group. (admin only)')}",
     "unmute": f"{smallcaps('command')}: /unmute\n\n{smallcaps('use')}:\n• {smallcaps('reply to user')}: /unmute\n• /unmute @user\n\n{smallcaps('unmutes a user in the group. (admin only)')}",
     "ban": f"{smallcaps('command')}: /ban\n\n{smallcaps('use')}:\n• {smallcaps('reply to user')}: /ban {smallcaps('reason')}\n• /ban @user {smallcaps('reason')}\n\n{smallcaps('bans a user from the group. (admin only)')}",
@@ -195,6 +197,7 @@ def help_list_caption() -> str:
         f"{smallcaps('abuse = noabuse filter')}\n"
         f"{smallcaps('welcome = setwelcome resetwelcome')}\n"
         f"{smallcaps('locks = lock unlock content types')}\n"
+        f"{smallcaps('couple = random couple of the day')}\n"
         f"{smallcaps('games = economy rpg fun')}"
     )
     return f"<blockquote expandable>{body}</blockquote>"
