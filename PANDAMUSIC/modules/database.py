@@ -276,7 +276,11 @@ async def get_sudoers_list() -> List[int]:
         row = await conn.fetchrow(f"SELECT sudoers FROM {T_SUDOERS} WHERE id='sudo'")
     if not row or not row["sudoers"]:
         return [console.OWNER_ID] if console.OWNER_ID else []
-    return list(row["sudoers"])
+    sudos = list(row["sudoers"])
+    # Always keep owner in list
+    if console.OWNER_ID and console.OWNER_ID not in sudos:
+        sudos.append(console.OWNER_ID)
+    return sudos
 
 
 async def add_sudo(user_id: int):
@@ -290,6 +294,43 @@ async def add_sudo(user_id: int):
                    ON CONFLICT(id) DO UPDATE SET sudoers=EXCLUDED.sudoers""",
                 sudos,
             )
+    # Live filter update
+    try:
+        if user_id not in console.sudoers:
+            console.sudoers.add(user_id)
+    except Exception:
+        pass
+
+
+async def remove_sudo(user_id: int) -> bool:
+    """Remove user from sudo. Owner cannot be removed. Returns True if removed."""
+    if user_id == console.OWNER_ID:
+        return False
+    sudos = await get_sudoers_list()
+    if user_id not in sudos:
+        return False
+    sudos = [x for x in sudos if x != user_id]
+    if console.OWNER_ID and console.OWNER_ID not in sudos:
+        sudos.append(console.OWNER_ID)
+    if _ok():
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                f"""INSERT INTO {T_SUDOERS}(id, sudoers) VALUES('sudo', $1)
+                   ON CONFLICT(id) DO UPDATE SET sudoers=EXCLUDED.sudoers""",
+                sudos,
+            )
+    try:
+        # filters.user() supports discard/remove depending on version
+        if hasattr(console.sudoers, "discard"):
+            console.sudoers.discard(user_id)
+        elif hasattr(console.sudoers, "remove"):
+            try:
+                console.sudoers.remove(user_id)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return True
 
 
 async def count_sudoers() -> int:
