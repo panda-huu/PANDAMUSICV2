@@ -35,7 +35,10 @@ HELP_COMMANDS = [
     ("resume", "/resume"), ("skip", "/skip"), ("end", "/end"),
     ("stats", "/stats"), ("active", "/active"), ("broadcast", "/broadcast"),
 ]
-ACTION_COMMANDS = [("mute", "/mute"), ("unmute", "/unmute"), ("ban", "/ban"), ("unban", "/unban"), ("kick", "/kick")]
+ACTION_COMMANDS = [
+    ("mute", "/mute"), ("unmute", "/unmute"), ("ban", "/ban"),
+    ("unban", "/unban"), ("kick", "/kick"), ("tagall", "/tagall"),
+]
 CHATBOT_COMMANDS = [("chaton", "/chaton"), ("chatoff", "/chatoff")]
 ABUSE_COMMANDS = [("noabuse", "/noabuse")]
 WELCOME_COMMANDS = [("welcome", "/welcome"), ("setwelcome", "/setwelcome"), ("resetwelcome", "/resetwelcome")]
@@ -56,6 +59,7 @@ CMD_USAGE = {
     "ban": f"{smallcaps('command')}: /ban\n\n{smallcaps('use')}:\n• {smallcaps('reply to user')}: /ban {smallcaps('reason')}\n• /ban @user {smallcaps('reason')}\n\n{smallcaps('bans a user from the group. (admin only)')}",
     "unban": f"{smallcaps('command')}: /unban\n\n{smallcaps('use')}:\n• {smallcaps('reply to user')}: /unban\n• /unban @user\n\n{smallcaps('unbans a user in the group. (admin only)')}",
     "kick": f"{smallcaps('command')}: /kick\n\n{smallcaps('use')}:\n• {smallcaps('reply to user')}: /kick {smallcaps('reason')}\n• /kick @user {smallcaps('reason')}\n\n{smallcaps('kicks a user from the group. (admin only)')}",
+    "tagall": f"{smallcaps('command')}: /tagall\n\n{smallcaps('use')}:\n• /tagall {smallcaps('your message')}\n• {smallcaps('reply to a message with')} /tagall\n\n{smallcaps('tags all group members with your message.')}\n{smallcaps('example')}: /tagall hi everyone\n\n{smallcaps('admin / owner / sudo only.')}\n{smallcaps('bot must be admin to list members.')}",
     "chaton": f"{smallcaps('command')}: /chaton\n\n{smallcaps('use')}: /chaton\n\n{smallcaps('enables chatbot in this chat.')}\n{smallcaps('group: admin only. private: anyone.')}\n{smallcaps('then mention bot or say its name to chat.')}",
     "chatoff": f"{smallcaps('command')}: /chatoff\n\n{smallcaps('use')}: /chatoff\n\n{smallcaps('disables chatbot in this chat.')}\n{smallcaps('group: admin only.')}",
     "noabuse": f"{smallcaps('command')}: /noabuse\n\n{smallcaps('use')}:\n• /noabuse on\n• /noabuse off\n\n{smallcaps('auto deletes abusive messages in group.')}\n{smallcaps('admin only. bot needs delete messages right.')}",
@@ -186,7 +190,7 @@ def help_list_caption() -> str:
     body = (
         f"{smallcaps('help menu')}\n\n"
         f"{smallcaps('tap any command button below to see how to use it.')}\n"
-        f"{smallcaps('action = mute ban kick etc.')}\n"
+        f"{smallcaps('action = mute ban kick tagall etc.')}\n"
         f"{smallcaps('chatbot = chaton chatoff')}\n"
         f"{smallcaps('abuse = noabuse filter')}\n"
         f"{smallcaps('welcome = setwelcome resetwelcome')}\n"
@@ -197,7 +201,7 @@ def help_list_caption() -> str:
 
 
 def action_list_caption() -> str:
-    return f"<blockquote expandable>{smallcaps('action commands')}\n\n{smallcaps('moderation tools for group admins.')}\n{smallcaps('tap a button to see usage.')}</blockquote>"
+    return f"<blockquote expandable>{smallcaps('action commands')}\n\n{smallcaps('moderation tools for group admins.')}\n{smallcaps('includes tagall to mention everyone.')}\n{smallcaps('tap a button to see usage.')}</blockquote>"
 
 
 def chatbot_list_caption() -> str:
