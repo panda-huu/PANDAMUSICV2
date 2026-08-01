@@ -1,6 +1,8 @@
 """
 PANDAMUSIC — PostgreSQL Database Layer (asyncpg)
-MongoDB completely removed.
+
+IMPORTANT: All tables use pmv2_ prefix so this bot's data
+is isolated from any other bot sharing the same Supabase/Postgres.
 """
 
 import random
@@ -14,6 +16,13 @@ log = console.logs(__name__)
 
 _pool: Optional[asyncpg.Pool] = None
 assistantdict = {}
+
+# Bot-specific table names — DO NOT share with other bots on same DB
+T_ASSISTANTS = "pmv2_assistants"
+T_USERS = "pmv2_served_users"
+T_CHATS = "pmv2_served_chats"
+T_ADMINS_ONLY = "pmv2_admins_only"
+T_SUDOERS = "pmv2_sudoers"
 
 
 async def init_db():
@@ -43,7 +52,7 @@ async def init_db():
             statement_cache_size=0,
         )
         await _create_tables()
-        log.info("✅ PostgreSQL connected successfully!")
+        log.info("✅ PostgreSQL connected (pmv2_ tables — isolated from other bots)")
     except Exception as e:
         log.error(f"❌ DB connection failed: {e}")
         _pool = None
@@ -52,33 +61,33 @@ async def init_db():
 
 async def _create_tables():
     async with _pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS assistants (
+        await conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {T_ASSISTANTS} (
                 chat_id BIGINT PRIMARY KEY,
                 assistant INT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS served_users (
+            CREATE TABLE IF NOT EXISTS {T_USERS} (
                 user_id BIGINT PRIMARY KEY,
                 added_at TIMESTAMPTZ DEFAULT NOW()
             );
 
-            CREATE TABLE IF NOT EXISTS served_chats (
+            CREATE TABLE IF NOT EXISTS {T_CHATS} (
                 chat_id BIGINT PRIMARY KEY,
                 added_at TIMESTAMPTZ DEFAULT NOW()
             );
 
-            CREATE TABLE IF NOT EXISTS admins_only (
+            CREATE TABLE IF NOT EXISTS {T_ADMINS_ONLY} (
                 chat_id BIGINT PRIMARY KEY,
                 value BOOLEAN DEFAULT TRUE
             );
 
-            CREATE TABLE IF NOT EXISTS sudoers (
+            CREATE TABLE IF NOT EXISTS {T_SUDOERS} (
                 id TEXT PRIMARY KEY DEFAULT 'sudo',
-                sudoers BIGINT[] DEFAULT '{}'
+                sudoers BIGINT[] DEFAULT '{{}}'
             );
         """)
-    log.info("✅ Tables ready")
+    log.info("✅ pmv2_ tables ready")
 
 
 def _ok() -> bool:
@@ -98,7 +107,7 @@ async def set_assistant(chat_id: int):
     if _ok():
         async with _pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO assistants(chat_id, assistant) VALUES($1, $2)
+                f"""INSERT INTO {T_ASSISTANTS}(chat_id, assistant) VALUES($1, $2)
                    ON CONFLICT(chat_id) DO UPDATE SET assistant=EXCLUDED.assistant""",
                 chat_id, ran,
             )
@@ -112,7 +121,7 @@ async def get_assistant(chat_id: int):
         if _ok():
             async with _pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT assistant FROM assistants WHERE chat_id=$1", chat_id
+                    f"SELECT assistant FROM {T_ASSISTANTS} WHERE chat_id=$1", chat_id
                 )
             if row and row["assistant"] in assistants:
                 assistantdict[chat_id] = row["assistant"]
@@ -130,7 +139,7 @@ async def set_calls_assistant(chat_id: int) -> int:
     if _ok():
         async with _pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO assistants(chat_id, assistant) VALUES($1, $2)
+                f"""INSERT INTO {T_ASSISTANTS}(chat_id, assistant) VALUES($1, $2)
                    ON CONFLICT(chat_id) DO UPDATE SET assistant=EXCLUDED.assistant""",
                 chat_id, ran,
             )
@@ -144,7 +153,7 @@ async def group_assistant(self, chat_id: int):
         if _ok():
             async with _pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT assistant FROM assistants WHERE chat_id=$1", chat_id
+                    f"SELECT assistant FROM {T_ASSISTANTS} WHERE chat_id=$1", chat_id
                 )
             if row and row["assistant"] in assistants:
                 assistantdict[chat_id] = row["assistant"]
@@ -165,17 +174,19 @@ async def is_served_user(user_id: int) -> bool:
         return False
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT 1 FROM served_users WHERE user_id=$1", user_id
+            f"SELECT 1 FROM {T_USERS} WHERE user_id=$1", user_id
         )
     return row is not None
 
 
 async def add_served_user(user_id: int):
-    if not _ok() or await is_served_user(user_id):
+    if not _ok() or not user_id or user_id <= 0:
+        return
+    if await is_served_user(user_id):
         return
     async with _pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO served_users(user_id) VALUES($1) ON CONFLICT DO NOTHING",
+            f"INSERT INTO {T_USERS}(user_id) VALUES($1) ON CONFLICT DO NOTHING",
             user_id,
         )
 
@@ -184,8 +195,16 @@ async def get_served_users() -> list:
     if not _ok():
         return []
     async with _pool.acquire() as conn:
-        rows = await conn.fetch("SELECT user_id FROM served_users WHERE user_id > 0")
+        rows = await conn.fetch(f"SELECT user_id FROM {T_USERS} WHERE user_id > 0")
     return [{"user_id": r["user_id"]} for r in rows]
+
+
+async def count_served_users() -> int:
+    if not _ok():
+        return 0
+    async with _pool.acquire() as conn:
+        val = await conn.fetchval(f"SELECT COUNT(*) FROM {T_USERS} WHERE user_id > 0")
+    return int(val or 0)
 
 
 async def is_served_chat(chat_id: int) -> bool:
@@ -193,17 +212,19 @@ async def is_served_chat(chat_id: int) -> bool:
         return False
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT 1 FROM served_chats WHERE chat_id=$1", chat_id
+            f"SELECT 1 FROM {T_CHATS} WHERE chat_id=$1", chat_id
         )
     return row is not None
 
 
 async def add_served_chat(chat_id: int):
-    if not _ok() or await is_served_chat(chat_id):
+    if not _ok() or not chat_id:
+        return
+    if await is_served_chat(chat_id):
         return
     async with _pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO served_chats(chat_id) VALUES($1) ON CONFLICT DO NOTHING",
+            f"INSERT INTO {T_CHATS}(chat_id) VALUES($1) ON CONFLICT DO NOTHING",
             chat_id,
         )
 
@@ -212,8 +233,16 @@ async def get_served_chats() -> list:
     if not _ok():
         return []
     async with _pool.acquire() as conn:
-        rows = await conn.fetch("SELECT chat_id FROM served_chats WHERE chat_id < 0")
+        rows = await conn.fetch(f"SELECT chat_id FROM {T_CHATS} WHERE chat_id < 0")
     return [{"chat_id": r["chat_id"]} for r in rows]
+
+
+async def count_served_chats() -> int:
+    if not _ok():
+        return 0
+    async with _pool.acquire() as conn:
+        val = await conn.fetchval(f"SELECT COUNT(*) FROM {T_CHATS} WHERE chat_id < 0")
+    return int(val or 0)
 
 
 async def is_admins_only(chat_id: int) -> bool:
@@ -221,7 +250,7 @@ async def is_admins_only(chat_id: int) -> bool:
         return True
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT value FROM admins_only WHERE chat_id=$1", chat_id
+            f"SELECT value FROM {T_ADMINS_ONLY} WHERE chat_id=$1", chat_id
         )
     if not row:
         return True
@@ -233,7 +262,7 @@ async def set_admins_only(chat_id: int, value: bool) -> bool:
         return bool(value)
     async with _pool.acquire() as conn:
         await conn.execute(
-            """INSERT INTO admins_only(chat_id, value) VALUES($1, $2)
+            f"""INSERT INTO {T_ADMINS_ONLY}(chat_id, value) VALUES($1, $2)
                ON CONFLICT(chat_id) DO UPDATE SET value=EXCLUDED.value""",
             chat_id, bool(value),
         )
@@ -244,7 +273,7 @@ async def get_sudoers_list() -> List[int]:
     if not _ok():
         return [console.OWNER_ID] if console.OWNER_ID else []
     async with _pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT sudoers FROM sudoers WHERE id='sudo'")
+        row = await conn.fetchrow(f"SELECT sudoers FROM {T_SUDOERS} WHERE id='sudo'")
     if not row or not row["sudoers"]:
         return [console.OWNER_ID] if console.OWNER_ID else []
     return list(row["sudoers"])
@@ -257,7 +286,14 @@ async def add_sudo(user_id: int):
     if _ok():
         async with _pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO sudoers(id, sudoers) VALUES('sudo', $1)
+                f"""INSERT INTO {T_SUDOERS}(id, sudoers) VALUES('sudo', $1)
                    ON CONFLICT(id) DO UPDATE SET sudoers=EXCLUDED.sudoers""",
                 sudos,
             )
+
+
+async def count_sudoers() -> int:
+    try:
+        return len(await get_sudoers_list())
+    except Exception:
+        return 1 if console.OWNER_ID else 0
