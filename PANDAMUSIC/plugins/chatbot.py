@@ -24,6 +24,9 @@ BOT_TRIGGERS = [
 IGNORED_CMDS = [
     # music / core
     "lock",
+    "tagall",
+    "tag",
+    "mentionall",
     "unlock",
     "locks",
     "play",
